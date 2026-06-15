@@ -3,6 +3,7 @@ Product specs define externally visible behavior and user expectations.
 
 ## Current Specs
 
+- [MySQL Masking Proxy](mysql-masking-proxy.md)
 
 ## When To Add Or Update A Product Spec
 Create or update a product spec when work affects:

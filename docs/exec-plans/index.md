@@ -7,7 +7,7 @@ Execution plans are first-class development artifacts for substantial work.
 
 ## Active Plans
 
-None.
+- [M1 Implementation](active/m1-implementation.md)
 
 ## Completed Plans
 

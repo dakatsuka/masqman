@@ -3,6 +3,7 @@ References store external context that future agents need available inside the r
 
 ## Current References
 
+- [MySQL Protocol And Authentication Notes](mysql-protocol-auth-notes.md)
 
 ## Reference Policy
 

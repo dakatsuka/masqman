@@ -3,9 +3,11 @@ This directory is the source of truth for Masqman's technical design.
 
 ## Current Documents
 
+- [Initial Architecture](initial-architecture.md)
 
 ## Architecture Decision Records
 
+- [ADR 0001: MySQL Protocol And Parser Libraries](adr/0001-mysql-protocol-and-parser-libraries.md)
 
 ## When To Add Or Update A Design Doc
 Create or update a design document when a change affects:
