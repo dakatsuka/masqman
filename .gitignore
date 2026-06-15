@@ -1,0 +1,18 @@
+# Build outputs
+/bin/
+/dist/
+
+# Runtime state
+/var/
+
+# Local environment
+.env
+.env.*
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
