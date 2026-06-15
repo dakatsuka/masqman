@@ -105,6 +105,7 @@ Run the current repository checks:
 ```sh
 gofmt -w cmd internal
 go test ./...
+go tool golangci-lint run ./...
 ```
 
 Future M1 work will add Docker Compose integration tests for MySQL protocol
