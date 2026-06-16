@@ -105,6 +105,11 @@ read-only query forwarding, result masking, and structured audit logging.
   reads.
 - `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
   rejecting `FOR SHARE` locking reads.
+- `go test ./cmd/masqman` passed on 2026-06-16 after wiring CLI `-config`
+  validation through `config.Load`.
+- `go test ./...` passed on 2026-06-16 after wiring CLI `-config` validation.
+- `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
+  wiring CLI `-config` validation.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.

@@ -89,14 +89,16 @@ root password: rootpass
 
 ## Current CLI
 
-The CLI currently supports only scaffold verification:
+The CLI currently supports version output and TOML configuration validation:
 
 ```sh
 go run ./cmd/masqman -version
+go run ./cmd/masqman -config ./masqman.toml
 ```
 
-Configuration loading, browser authentication, MySQL proxying, masking, and
-audit logging are tracked in the M1 execution plan and are not implemented yet.
+The `-config` path is loaded and validated, then the command exits because
+browser authentication, MySQL proxying, masking, and audit logging startup are
+tracked in the M1 execution plan and are not implemented yet.
 
 ## Validation
 
