@@ -82,6 +82,38 @@ func TestValidateRejectsWeakOTPLimits(t *testing.T) {
 	}
 }
 
+func TestOTPStoreConfigConvertsEntropyBitsToBytes(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.OTP.TTL = 3 * time.Minute
+	cfg.OTP.UsernameEntropyBits = 97
+	cfg.OTP.PasswordEntropyBits = 193
+	cfg.RateLimits.CredentialFailures = 7
+	cfg.RateLimits.SourceFailures = 31
+	cfg.RateLimits.FailureWindow = 4 * time.Minute
+	cfg.RateLimits.CredentialIssuanceUserLimit = 11
+	cfg.RateLimits.CredentialIssuanceSessionLimit = 6
+	cfg.RateLimits.CredentialIssuanceWindow = 5 * time.Minute
+
+	storeConfig := cfg.OTPStoreConfig()
+	if storeConfig.TTL != 3*time.Minute ||
+		storeConfig.CredentialFailureLimit != 7 ||
+		storeConfig.SourceFailureLimit != 31 ||
+		storeConfig.SourceFailureWindow != 4*time.Minute ||
+		storeConfig.CredentialIssuanceUserLimit != 11 ||
+		storeConfig.CredentialIssuanceSessionLimit != 6 ||
+		storeConfig.CredentialIssuanceWindow != 5*time.Minute {
+		t.Fatalf("OTPStoreConfig returned wrong limits: %#v", storeConfig)
+	}
+	if storeConfig.CredentialUsernameBytes != 13 {
+		t.Fatalf("CredentialUsernameBytes = %d, want 13", storeConfig.CredentialUsernameBytes)
+	}
+	if storeConfig.CredentialPasswordBytes != 25 {
+		t.Fatalf("CredentialPasswordBytes = %d, want 25", storeConfig.CredentialPasswordBytes)
+	}
+}
+
 func TestValidateAppliesAuditDefaultPath(t *testing.T) {
 	t.Parallel()
 

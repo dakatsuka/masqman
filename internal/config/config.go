@@ -11,6 +11,7 @@ import (
 
 	"github.com/dakatsuka/masqman/internal/auth"
 	"github.com/dakatsuka/masqman/internal/masking"
+	"github.com/dakatsuka/masqman/internal/otp"
 )
 
 // ErrInvalid wraps configuration validation failures.
@@ -217,6 +218,22 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// OTPStoreConfig returns the in-memory OTP store settings derived from the
+// validated Masqman configuration.
+func (c Config) OTPStoreConfig() otp.StoreConfig {
+	return otp.StoreConfig{
+		TTL:                            c.OTP.TTL,
+		CredentialFailureLimit:         c.RateLimits.CredentialFailures,
+		SourceFailureLimit:             c.RateLimits.SourceFailures,
+		SourceFailureWindow:            c.RateLimits.FailureWindow,
+		CredentialIssuanceUserLimit:    c.RateLimits.CredentialIssuanceUserLimit,
+		CredentialIssuanceSessionLimit: c.RateLimits.CredentialIssuanceSessionLimit,
+		CredentialIssuanceWindow:       c.RateLimits.CredentialIssuanceWindow,
+		CredentialUsernameBytes:        entropyBytes(c.OTP.UsernameEntropyBits),
+		CredentialPasswordBytes:        entropyBytes(c.OTP.PasswordEntropyBits),
+	}
+}
+
 func (c *Config) applyDefaults(defaults Config) {
 	if c.Environment == "" {
 		c.Environment = defaults.Environment
@@ -293,4 +310,8 @@ func formatUndecoded(keys []toml.Key) string {
 	}
 
 	return strings.Join(formatted, ", ")
+}
+
+func entropyBytes(bits int) int {
+	return (bits + 7) / 8
 }
