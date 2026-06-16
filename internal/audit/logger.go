@@ -1,0 +1,281 @@
+// Package audit writes structured, normalized Masqman audit events.
+package audit
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+)
+
+// EventKind identifies the audit event category.
+type EventKind string
+
+const (
+	// EventAuth records a browser or MySQL authentication event.
+	EventAuth EventKind = "auth"
+	// EventQuery records a query decision.
+	EventQuery EventKind = "query"
+)
+
+// Event is the JSON-serializable audit record shape used by M1.
+type Event struct {
+	Time                time.Time `json:"time"`
+	Kind                EventKind `json:"kind"`
+	UserID              string    `json:"user_id,omitempty"`
+	SourceAddr          string    `json:"source_addr,omitempty"`
+	NormalizedStatement string    `json:"normalized_statement,omitempty"`
+	Decision            string    `json:"decision,omitempty"`
+	MaskedFields        int       `json:"masked_fields,omitempty"`
+	ErrorClass          string    `json:"error_class,omitempty"`
+}
+
+// Logger writes audit events. Callers fail closed when Log returns an error for
+// accepted authentication or query work.
+type Logger interface {
+	Log(ctx context.Context, event Event) error
+}
+
+// FileLogger writes newline-delimited JSON audit events to one owner-only file.
+type FileLogger struct {
+	mu     sync.Mutex
+	path   string
+	config FileConfig
+	file   *os.File
+}
+
+// FileConfig controls file audit output and size-based rotation.
+type FileConfig struct {
+	Path       string
+	MaxBytes   int64
+	MaxBackups int
+}
+
+// NewFileLogger opens or creates a file audit sink with owner-only permissions.
+func NewFileLogger(path string) (*FileLogger, error) {
+	return NewFileLoggerWithConfig(FileConfig{Path: path})
+}
+
+// NewFileLoggerWithConfig opens or creates a file audit sink with optional
+// size-based rotation.
+func NewFileLoggerWithConfig(config FileConfig) (*FileLogger, error) {
+	// #nosec G304 -- the audit sink path is operator configuration, not user input.
+	file, err := os.OpenFile(config.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+
+	return &FileLogger{path: config.Path, config: config, file: file}, nil
+}
+
+// Log writes one JSON line to the audit file.
+func (l *FileLogger) Log(_ context.Context, event Event) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if err := l.rotateIfNeededLocked(int64(len(encoded))); err != nil {
+		return err
+	}
+	_, err = l.file.Write(encoded)
+
+	return err
+}
+
+// Close flushes and closes the audit file.
+func (l *FileLogger) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.file.Close()
+}
+
+func (l *FileLogger) rotateIfNeededLocked(nextWriteBytes int64) error {
+	if l.config.MaxBytes <= 0 {
+		return nil
+	}
+
+	info, err := l.file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size()+nextWriteBytes <= l.config.MaxBytes {
+		return nil
+	}
+	if err := l.file.Close(); err != nil {
+		return err
+	}
+	if err := l.rotateBackupsLocked(); err != nil {
+		return err
+	}
+
+	// #nosec G304 -- the audit sink path is operator configuration, not user input.
+	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	l.file = file
+
+	return l.file.Chmod(0o600)
+}
+
+func (l *FileLogger) rotateBackupsLocked() error {
+	if l.config.MaxBackups <= 0 {
+		return os.Remove(l.path)
+	}
+
+	oldest := l.path + "." + strconv.Itoa(l.config.MaxBackups)
+	if err := removeIfExists(oldest); err != nil {
+		return err
+	}
+	for index := l.config.MaxBackups - 1; index >= 1; index-- {
+		from := l.path + "." + strconv.Itoa(index)
+		to := l.path + "." + strconv.Itoa(index+1)
+		if err := renameIfExists(from, to); err != nil {
+			return err
+		}
+	}
+
+	return renameIfExists(l.path, l.path+".1")
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	return nil
+}
+
+func renameIfExists(from string, to string) error {
+	if err := os.Rename(from, to); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	return nil
+}
+
+// NormalizeStatement removes comments and replaces string and numeric literals
+// with placeholders before a statement is written to audit logs.
+func NormalizeStatement(statement string) string {
+	var out strings.Builder
+	lastWasSpace := false
+
+	for i := 0; i < len(statement); {
+		r := rune(statement[i])
+		if isDashDashComment(statement, i) || statement[i] == '#' {
+			i++
+			for i < len(statement) && statement[i] != '\n' {
+				i++
+			}
+			lastWasSpace = out.Len() > 0
+			continue
+		}
+		if statement[i] == '/' && i+1 < len(statement) && statement[i+1] == '*' {
+			i += 2
+			for i+1 < len(statement) && !isBlockCommentEnd(statement, i) {
+				i++
+			}
+			if i+1 < len(statement) {
+				i += 2
+			}
+			lastWasSpace = out.Len() > 0
+			continue
+		}
+
+		if statement[i] == '\'' || statement[i] == '"' {
+			quote := statement[i]
+			writeToken(&out, &lastWasSpace, "?")
+			i++
+			for i < len(statement) {
+				if statement[i] == '\\' && i+1 < len(statement) {
+					i += 2
+					continue
+				}
+				if statement[i] == quote {
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+
+		if unicode.IsDigit(r) {
+			writeToken(&out, &lastWasSpace, "?")
+			for i < len(statement) && isNumericLiteralByte(statement[i]) {
+				i++
+			}
+			continue
+		}
+
+		if unicode.IsSpace(r) {
+			if out.Len() > 0 {
+				lastWasSpace = true
+			}
+			i++
+			continue
+		}
+
+		if lastWasSpace && out.Len() > 0 {
+			out.WriteByte(' ')
+			lastWasSpace = false
+		}
+		out.WriteRune(r)
+		i++
+	}
+
+	return strings.TrimSpace(out.String())
+}
+
+func writeToken(out *strings.Builder, lastWasSpace *bool, token string) {
+	if *lastWasSpace && out.Len() > 0 {
+		out.WriteByte(' ')
+	}
+	if out.Len() > 0 {
+		current := out.String()
+		if strings.HasSuffix(current, "?") {
+			*lastWasSpace = false
+			return
+		}
+	}
+	out.WriteString(token)
+	*lastWasSpace = false
+}
+
+func isNumericLiteralByte(value byte) bool {
+	return (value >= '0' && value <= '9') ||
+		(value >= 'a' && value <= 'z') ||
+		(value >= 'A' && value <= 'Z') ||
+		value == '.' ||
+		value == '_'
+}
+
+func isBlockCommentEnd(statement string, index int) bool {
+	return statement[index] == '*' && statement[index+1] == '/'
+}
+
+func isDashDashComment(statement string, index int) bool {
+	if statement[index] != '-' || index+1 >= len(statement) || statement[index+1] != '-' {
+		return false
+	}
+	if index+2 >= len(statement) {
+		return false
+	}
+
+	next := statement[index+2]
+
+	return next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '\f'
+}

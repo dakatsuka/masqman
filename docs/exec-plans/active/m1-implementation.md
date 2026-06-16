@@ -48,10 +48,10 @@ read-only query forwarding, result masking, and structured audit logging.
       containerized MySQL client.
 - [x] Design review: request sub-agent review for ADR 0001 and this plan;
       incorporate justified feedback.
-- [ ] Red: write focused tests for config validation, OTP expiry/consume,
+- [x] Red: write focused tests for config validation, OTP expiry/consume,
       rate limits, SQL classification, masking precedence, audit normalization,
       and HTTP auth sessions.
-- [ ] Green: implement config, OTP, local auth, audit logger, and policy modules.
+- [x] Green: implement config, OTP, local auth, audit logger, and policy modules.
 - [ ] Red: write Docker Compose protocol tests for auth, allowed setup
       statements, rejected unsupported commands, forwarded SELECT, masking, and
       metadata query rejection.
@@ -70,10 +70,17 @@ read-only query forwarding, result masking, and structured audit logging.
 - Keep expression and metadata policies built-in for M1.
 - Treat read-only startup probes as `AllowOperationalRead`, not `AllowSetup`.
 - Issue OTPs from `POST /credentials`, not automatically from login.
+- Implement the first `sqlpolicy` package as a conservative built-in scanner
+  while the `go-mysql-org/go-mysql` and TiDB parser spike remains incomplete.
+  The scanner is comment-aware and quote-aware for the covered M1 tests, but
+  parser-backed classification remains required before protocol forwarding is
+  complete.
 
 ## Verification
 
-- `go test ./...`
+- `go test ./...` passed on 2026-06-16 for config, OTP, local auth, audit,
+  masking, SQL policy, and browser session modules.
+- `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
