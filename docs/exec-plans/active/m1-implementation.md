@@ -91,6 +91,10 @@ read-only query forwarding, result masking, and structured audit logging.
   MySQL error mapping, and `caching_sha2_password` credential setup. This is an
   API boundary spike only; forwarding and containerized client compatibility
   remain pending.
+- Enforce `sqlpolicy` decisions before `COM_QUERY` delegation in
+  `internal/mysqlproxy`: allowed statements pass to the next protocol handler,
+  policy rejections map to `ER_SPECIFIC_ACCESS_DENIED_ERROR`, and unsupported
+  protocol surfaces remain `ER_NOT_SUPPORTED_YET`.
 
 ## Verification
 
@@ -133,6 +137,11 @@ read-only query forwarding, result masking, and structured audit logging.
   boundary spike.
 - `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
   adding the `go-mysql` protocol boundary spike.
+- `go test ./internal/mysqlproxy` passed on 2026-06-16 after adding the
+  `sqlpolicy` gate for query and init-db handling.
+- `go test ./...` passed on 2026-06-16 after adding the `sqlpolicy` gate.
+- `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
+  adding the `sqlpolicy` gate.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.

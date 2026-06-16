@@ -55,12 +55,18 @@ func TestAuthenticationHandlerUsesCachingSHA2(t *testing.T) {
 func assertUnsupported(t *testing.T, err error) {
 	t.Helper()
 
+	assertMySQLErrorCode(t, err, mysql.ER_NOT_SUPPORTED_YET)
+}
+
+func assertMySQLErrorCode(t *testing.T, err error, code uint16) {
+	t.Helper()
+
 	var mysqlErr *mysql.MyError
 	if !errors.As(err, &mysqlErr) {
 		t.Fatalf("error = %v, want *mysql.MyError", err)
 	}
-	if mysqlErr.Code != mysql.ER_NOT_SUPPORTED_YET {
-		t.Fatalf("error code = %d, want %d", mysqlErr.Code, mysql.ER_NOT_SUPPORTED_YET)
+	if mysqlErr.Code != code {
+		t.Fatalf("error code = %d, want %d", mysqlErr.Code, code)
 	}
 }
 
