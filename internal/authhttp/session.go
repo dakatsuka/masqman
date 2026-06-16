@@ -92,6 +92,23 @@ func (s *SessionStore) Get(id string) (Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.getLocked(id, true)
+}
+
+// ValidateCSRF reports whether token matches the current session CSRF token.
+func (s *SessionStore) ValidateCSRF(sessionID string, token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.getLocked(sessionID, false)
+	if !ok {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare([]byte(session.CSRFToken), []byte(token)) == 1
+}
+
+func (s *SessionStore) getLocked(id string, refreshIdle bool) (Session, bool) {
 	session, ok := s.sessions[id]
 	if !ok {
 		return Session{}, false
@@ -102,20 +119,14 @@ func (s *SessionStore) Get(id string) (Session, bool) {
 		return Session{}, false
 	}
 
+	if !refreshIdle {
+		return session, true
+	}
+
 	session.LastSeenAt = now
 	s.sessions[id] = session
 
 	return session, true
-}
-
-// ValidateCSRF reports whether token matches the current session CSRF token.
-func (s *SessionStore) ValidateCSRF(sessionID string, token string) bool {
-	session, ok := s.Get(sessionID)
-	if !ok {
-		return false
-	}
-
-	return subtle.ConstantTimeCompare([]byte(session.CSRFToken), []byte(token)) == 1
 }
 
 func randomToken(random io.Reader, size int) (string, error) {

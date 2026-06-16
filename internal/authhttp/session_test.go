@@ -70,3 +70,30 @@ func TestSessionStoreExpiresIdleAndAbsoluteLifetimes(t *testing.T) {
 		t.Fatal("Get found absolute-expired session")
 	}
 }
+
+func TestValidateCSRFDoesNotRefreshIdleLifetime(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	store := authhttp.NewSessionStore(authhttp.SessionConfig{
+		IdleLifetime:     time.Minute,
+		AbsoluteLifetime: 12 * time.Hour,
+		TokenBytes:       16,
+		Now:              func() time.Time { return now },
+	})
+
+	session, err := store.Create(auth.User{ID: "alice"})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	now = now.Add(30 * time.Second)
+	if !store.ValidateCSRF(session.ID, session.CSRFToken) {
+		t.Fatal("ValidateCSRF rejected current token")
+	}
+
+	now = now.Add(31 * time.Second)
+	if _, ok := store.Get(session.ID); ok {
+		t.Fatal("Get found idle-expired session after CSRF validation")
+	}
+}
