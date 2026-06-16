@@ -27,9 +27,9 @@ type FlowProvider interface {
 // LocalUser is one username/password account loaded from development
 // configuration.
 type LocalUser struct {
-	Username    string
-	Password    string
-	DisplayName string
+	Username    string `toml:"username"`
+	Password    string `toml:"password"`
+	DisplayName string `toml:"display_name"`
 }
 
 // LocalProvider authenticates users against configured local credentials.

@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/dakatsuka/masqman/internal/auth"
@@ -48,5 +49,27 @@ func TestLocalProviderRejectsUnknownOrWrongPassword(t *testing.T) {
 				t.Fatalf("Authenticate error = %v, want %v", err, auth.ErrInvalidCredentials)
 			}
 		})
+	}
+}
+
+func TestLocalUserTOMLTags(t *testing.T) {
+	t.Parallel()
+
+	userType := reflect.TypeOf(auth.LocalUser{})
+	for _, tc := range []struct {
+		field string
+		tag   string
+	}{
+		{field: "Username", tag: "username"},
+		{field: "Password", tag: "password"},
+		{field: "DisplayName", tag: "display_name"},
+	} {
+		field, ok := userType.FieldByName(tc.field)
+		if !ok {
+			t.Fatalf("LocalUser missing field %s", tc.field)
+		}
+		if got := field.Tag.Get("toml"); got != tc.tag {
+			t.Fatalf("LocalUser.%s toml tag = %q, want %q", tc.field, got, tc.tag)
+		}
 	}
 }
