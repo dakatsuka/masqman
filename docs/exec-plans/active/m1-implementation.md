@@ -81,7 +81,7 @@ read-only query forwarding, result masking, and structured audit logging.
   parser-backed classification remains required before protocol forwarding is
   complete.
 - Known scanner limits are intentionally fail-closed for M1 foundation work:
-  `WITH ... SELECT`, `SHOW`, and `DESCRIBE` are rejected; only `count()` is
+  `WITH ... SELECT`, `SHOW`, and `DESCRIBE` are rejected; only `COUNT(*)` is
   allowlisted as a function-shaped read; broader expression and metadata
   handling must be parser-backed before M1 protocol forwarding is complete.
   Boundary tests for the interim scanner are regression coverage, not a
@@ -99,6 +99,12 @@ read-only query forwarding, result masking, and structured audit logging.
   coverage.
 - `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
   SQL policy scanner boundary coverage.
+- `go test ./internal/sqlpolicy` passed on 2026-06-16 after rejecting `FOR
+  SHARE` locking reads.
+- `go test ./...` passed on 2026-06-16 after rejecting `FOR SHARE` locking
+  reads.
+- `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
+  rejecting `FOR SHARE` locking reads.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.

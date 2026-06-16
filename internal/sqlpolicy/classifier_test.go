@@ -44,6 +44,7 @@ func TestClassifierRejectsUnsafeStatements(t *testing.T) {
 		"insert into employees(id) values (1)",
 		"select * from employees into outfile '/tmp/export'",
 		"select * from employees for update",
+		"select * from employees for share",
 		"select * from information_schema.tables",
 		"select * from `information_schema`.tables",
 		"select * from mysql . user",

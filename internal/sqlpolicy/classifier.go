@@ -83,6 +83,7 @@ func (c *StaticClassifier) Classify(statement string) Decision {
 		" into outfile",
 		" into dumpfile",
 		" for update",
+		" for share",
 		" lock in share mode",
 		" union ",
 	) || referencesSystemSchema(lower):
