@@ -110,6 +110,41 @@ func TestValidateRejectsIncompleteLocalUsers(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsDuplicateLocalUsers(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name           string
+		secondUsername string
+	}{
+		{name: "exact duplicate", secondUsername: "alice"},
+		{name: "trimmed duplicate", secondUsername: " alice "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "masqman.toml")
+			input := []byte(`
+[[auth.local_users]]
+username = "alice"
+password = "secret"
+
+[[auth.local_users]]
+username = "` + tc.secondUsername + `"
+password = "different"
+`)
+			if err := os.WriteFile(path, input, 0o600); err != nil {
+				t.Fatalf("WriteFile returned error: %v", err)
+			}
+
+			_, err := config.Load(path)
+			if !errors.Is(err, config.ErrInvalid) {
+				t.Fatalf("Load error = %v, want %v", err, config.ErrInvalid)
+			}
+		})
+	}
+}
+
 func TestOTPStoreConfigConvertsEntropyBitsToBytes(t *testing.T) {
 	t.Parallel()
 

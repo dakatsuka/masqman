@@ -211,10 +211,16 @@ func (c *Config) Validate() error {
 	if c.OTP.PasswordEntropyBits < 192 {
 		return fmt.Errorf("%w: OTP password entropy must be at least 192 bits", ErrInvalid)
 	}
+	localUsernames := make(map[string]struct{}, len(c.Auth.LocalUsers))
 	for i, user := range c.Auth.LocalUsers {
-		if strings.TrimSpace(user.Username) == "" {
+		username := strings.TrimSpace(user.Username)
+		if username == "" {
 			return fmt.Errorf("%w: auth local user %d username is required", ErrInvalid, i)
 		}
+		if _, ok := localUsernames[username]; ok {
+			return fmt.Errorf("%w: auth local user %q is duplicated", ErrInvalid, username)
+		}
+		localUsernames[username] = struct{}{}
 		if user.Password == "" {
 			return fmt.Errorf("%w: auth local user %d password is required", ErrInvalid, i)
 		}
