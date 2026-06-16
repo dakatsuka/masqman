@@ -114,6 +114,24 @@ func TestOTPStoreConfigConvertsEntropyBitsToBytes(t *testing.T) {
 	}
 }
 
+func TestSQLPolicyConfigMapsSetupPolicy(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Setup.AllowSchemaSelection = []string{"app", "reporting"}
+	cfg.Setup.AllowDefaultSetup = false
+
+	policyConfig := cfg.SQLPolicyConfig()
+	if policyConfig.AllowDefaultSetup {
+		t.Fatal("SQLPolicyConfig AllowDefaultSetup = true, want false")
+	}
+	if len(policyConfig.AllowedSchemas) != 2 ||
+		policyConfig.AllowedSchemas[0] != "app" ||
+		policyConfig.AllowedSchemas[1] != "reporting" {
+		t.Fatalf("SQLPolicyConfig AllowedSchemas = %#v, want app and reporting", policyConfig.AllowedSchemas)
+	}
+}
+
 func TestValidateAppliesAuditDefaultPath(t *testing.T) {
 	t.Parallel()
 

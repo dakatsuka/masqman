@@ -12,6 +12,7 @@ import (
 	"github.com/dakatsuka/masqman/internal/auth"
 	"github.com/dakatsuka/masqman/internal/masking"
 	"github.com/dakatsuka/masqman/internal/otp"
+	"github.com/dakatsuka/masqman/internal/sqlpolicy"
 )
 
 // ErrInvalid wraps configuration validation failures.
@@ -231,6 +232,15 @@ func (c Config) OTPStoreConfig() otp.StoreConfig {
 		CredentialIssuanceWindow:       c.RateLimits.CredentialIssuanceWindow,
 		CredentialUsernameBytes:        entropyBytes(c.OTP.UsernameEntropyBits),
 		CredentialPasswordBytes:        entropyBytes(c.OTP.PasswordEntropyBits),
+	}
+}
+
+// SQLPolicyConfig returns the SQL classifier settings derived from the
+// validated Masqman configuration.
+func (c Config) SQLPolicyConfig() sqlpolicy.Config {
+	return sqlpolicy.Config{
+		AllowedSchemas:    append([]string(nil), c.Setup.AllowSchemaSelection...),
+		AllowDefaultSetup: c.Setup.AllowDefaultSetup,
 	}
 }
 
