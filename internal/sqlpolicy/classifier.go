@@ -67,6 +67,9 @@ func (c *StaticClassifier) Classify(statement string) Decision {
 	}
 
 	lower := strings.ToLower(normalized)
+	if hasTrailingStatementTerminator(statement) {
+		lower = trimStatementTerminator(lower)
+	}
 	switch {
 	case c.allowDefaultSetup && isAllowedSetup(lower):
 		return Decision{Kind: AllowSetup, Reason: "allowed_setup"}
@@ -103,6 +106,72 @@ func (c *StaticClassifier) classifyUse(lower string) Decision {
 
 func normalize(statement string) string {
 	return strings.Join(strings.Fields(scanSQL(statement)), " ")
+}
+
+func trimStatementTerminator(statement string) string {
+	statement = strings.TrimSpace(statement)
+	statement = strings.TrimSuffix(statement, ";")
+
+	return strings.TrimSpace(statement)
+}
+
+func hasTrailingStatementTerminator(statement string) bool {
+	var last byte
+	for i := 0; i < len(statement); {
+		switch {
+		case statement[i] == '\'' || statement[i] == '"':
+			last = '?'
+			quote := statement[i]
+			i++
+			for i < len(statement) {
+				if statement[i] == '\\' && i+1 < len(statement) {
+					i += 2
+					continue
+				}
+				if statement[i] == quote {
+					i++
+					break
+				}
+				i++
+			}
+		case statement[i] == '`':
+			last = '`'
+			i++
+			for i < len(statement) {
+				if statement[i] == '`' {
+					i++
+					break
+				}
+				i++
+			}
+		case isDashDashComment(statement, i):
+			i += 2
+			for i < len(statement) && statement[i] != '\n' {
+				i++
+			}
+		case statement[i] == '#':
+			i++
+			for i < len(statement) && statement[i] != '\n' {
+				i++
+			}
+		case statement[i] == '/' && i+1 < len(statement) && statement[i+1] == '*' &&
+			!isVersionedComment(statement, i):
+			i += 2
+			for i+1 < len(statement) && !isBlockCommentEnd(statement, i) {
+				i++
+			}
+			if i+1 < len(statement) {
+				i += 2
+			}
+		default:
+			if !isSpaceByte(statement[i]) {
+				last = statement[i]
+			}
+			i++
+		}
+	}
+
+	return last == ';'
 }
 
 func scanSQL(statement string) string {
@@ -275,6 +344,10 @@ func isIdentifierBoundary(value string, index int) bool {
 
 func isIdentifierByte(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_'
+}
+
+func isSpaceByte(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f'
 }
 
 func hasUnapprovedFunctionCall(lower string) bool {

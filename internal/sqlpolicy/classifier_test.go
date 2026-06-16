@@ -86,6 +86,16 @@ func TestClassifierSeparatesSetupStatements(t *testing.T) {
 		t.Fatalf("Classify SET NAMES = %#v, want AllowSetup", decision)
 	}
 
+	decision = classifier.Classify("SET NAMES utf8mb4;")
+	if decision.Kind != sqlpolicy.AllowSetup {
+		t.Fatalf("Classify SET NAMES with semicolon = %#v, want AllowSetup", decision)
+	}
+
+	decision = classifier.Classify("SET character_set_results = utf8mb4;")
+	if decision.Kind != sqlpolicy.AllowSetup {
+		t.Fatalf("Classify SET character_set_results with semicolon = %#v, want AllowSetup", decision)
+	}
+
 	decision = classifier.Classify("SET character_set_results = utf8mb4, sql_mode = 'ANSI_QUOTES'")
 	if decision.Kind != sqlpolicy.Reject {
 		t.Fatalf("Classify combined SET = %#v, want Reject", decision)
@@ -99,6 +109,16 @@ func TestClassifierSeparatesSetupStatements(t *testing.T) {
 	decision = classifier.Classify("USE app")
 	if decision.Kind != sqlpolicy.AllowSetup {
 		t.Fatalf("Classify USE app = %#v, want AllowSetup", decision)
+	}
+
+	decision = classifier.Classify("USE app;")
+	if decision.Kind != sqlpolicy.AllowSetup {
+		t.Fatalf("Classify USE app with semicolon = %#v, want AllowSetup", decision)
+	}
+
+	decision = classifier.Classify("USE `app;`")
+	if decision.Kind != sqlpolicy.Reject {
+		t.Fatalf("Classify USE quoted app semicolon = %#v, want Reject", decision)
 	}
 
 	decision = classifier.Classify("USE mysql")
