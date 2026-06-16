@@ -358,13 +358,22 @@ func hasUnapprovedFunctionCall(lower string) bool {
 			return false
 		}
 		before := strings.TrimSpace(remainder[:idx])
-		if functionName(before) == "count" {
-			remainder = remainder[idx+1:]
+		closeIdx := strings.IndexByte(remainder[idx+1:], ')')
+		if closeIdx < 0 {
+			return true
+		}
+		args := remainder[idx+1 : idx+1+closeIdx]
+		if functionName(before) == "count" && isAllowedCountArgs(args) {
+			remainder = remainder[idx+closeIdx+2:]
 			continue
 		}
 
 		return true
 	}
+}
+
+func isAllowedCountArgs(args string) bool {
+	return strings.TrimSpace(args) == "*"
 }
 
 func isBlockCommentEnd(statement string, index int) bool {

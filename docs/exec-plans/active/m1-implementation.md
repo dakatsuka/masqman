@@ -55,7 +55,7 @@ read-only query forwarding, result masking, and structured audit logging.
 - [ ] Red: write Docker Compose protocol tests for auth, allowed setup
       statements, rejected unsupported commands, forwarded SELECT, masking, and
       metadata query rejection.
-- [ ] Red: while parser integration remains incomplete, add SQL policy boundary
+- [x] Red: while parser integration remains incomplete, add SQL policy boundary
       coverage for scanner limits: `WITH ... SELECT`, `SHOW`, `DESCRIBE`,
       function allowlist boundaries, and metadata-query rejection.
 - [ ] Green: complete parser-backed SQL classification before M1 protocol
@@ -92,6 +92,13 @@ read-only query forwarding, result masking, and structured audit logging.
 - `go test ./...` passed on 2026-06-16 for config, OTP, local auth, audit,
   masking, SQL policy, and browser session modules.
 - `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues.
+- `go test ./internal/sqlpolicy` passed on 2026-06-16 after adding scanner
+  boundary coverage for `WITH`, `SHOW`, `DESCRIBE`, metadata-query rejection,
+  and `COUNT(*)`-only function allowlisting.
+- `go test ./...` passed on 2026-06-16 after SQL policy scanner boundary
+  coverage.
+- `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
+  SQL policy scanner boundary coverage.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
