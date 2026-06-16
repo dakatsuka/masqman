@@ -40,6 +40,11 @@ func TestNormalizeStatementRemovesSensitiveLiteralsAndComments(t *testing.T) {
 			statement: "select 1--1; drop table employees",
 			want:      "select ?--?; drop table employees",
 		},
+		{
+			name:      "adjacent literals",
+			statement: "select 'a''b', 1 2",
+			want:      "select ?, ? ?",
+		},
 	}
 
 	for _, tc := range tests {

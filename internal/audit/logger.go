@@ -209,6 +209,7 @@ func renameIfExists(from string, to string) error {
 func NormalizeStatement(statement string) string {
 	var out strings.Builder
 	lastWasSpace := false
+	lastWasPlaceholder := false
 
 	for i := 0; i < len(statement); {
 		r := rune(statement[i])
@@ -234,7 +235,7 @@ func NormalizeStatement(statement string) string {
 
 		if statement[i] == '\'' || statement[i] == '"' {
 			quote := statement[i]
-			writeToken(&out, &lastWasSpace, "?")
+			writeToken(&out, &lastWasSpace, &lastWasPlaceholder, "?")
 			i++
 			for i < len(statement) {
 				if statement[i] == '\\' && i+1 < len(statement) {
@@ -251,7 +252,7 @@ func NormalizeStatement(statement string) string {
 		}
 
 		if unicode.IsDigit(r) {
-			writeToken(&out, &lastWasSpace, "?")
+			writeToken(&out, &lastWasSpace, &lastWasPlaceholder, "?")
 			for i < len(statement) && isNumericLiteralByte(statement[i]) {
 				i++
 			}
@@ -271,25 +272,25 @@ func NormalizeStatement(statement string) string {
 			lastWasSpace = false
 		}
 		out.WriteRune(r)
+		lastWasPlaceholder = r == '?'
 		i++
 	}
 
 	return strings.TrimSpace(out.String())
 }
 
-func writeToken(out *strings.Builder, lastWasSpace *bool, token string) {
+func writeToken(out *strings.Builder, lastWasSpace *bool, lastWasPlaceholder *bool, token string) {
 	if *lastWasSpace && out.Len() > 0 {
 		out.WriteByte(' ')
+		*lastWasPlaceholder = false
 	}
-	if out.Len() > 0 {
-		current := out.String()
-		if strings.HasSuffix(current, "?") {
-			*lastWasSpace = false
-			return
-		}
+	if *lastWasPlaceholder {
+		*lastWasSpace = false
+		return
 	}
 	out.WriteString(token)
 	*lastWasSpace = false
+	*lastWasPlaceholder = token == "?"
 }
 
 func isNumericLiteralByte(value byte) bool {
