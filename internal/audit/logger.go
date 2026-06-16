@@ -42,10 +42,11 @@ type Logger interface {
 
 // FileLogger writes newline-delimited JSON audit events to one owner-only file.
 type FileLogger struct {
-	mu     sync.Mutex
-	path   string
-	config FileConfig
-	file   *os.File
+	mu       sync.Mutex
+	path     string
+	config   FileConfig
+	file     auditFile
+	openFile func(string) (auditFile, error)
 }
 
 // FileConfig controls file audit output and size-based rotation.
@@ -63,8 +64,7 @@ func NewFileLogger(path string) (*FileLogger, error) {
 // NewFileLoggerWithConfig opens or creates a file audit sink with optional
 // size-based rotation.
 func NewFileLoggerWithConfig(config FileConfig) (*FileLogger, error) {
-	// #nosec G304 -- the audit sink path is operator configuration, not user input.
-	file, err := os.OpenFile(config.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := openAuditFile(config.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,12 @@ func NewFileLoggerWithConfig(config FileConfig) (*FileLogger, error) {
 		return nil, err
 	}
 
-	return &FileLogger{path: config.Path, config: config, file: file}, nil
+	return &FileLogger{
+		path:     config.Path,
+		config:   config,
+		file:     file,
+		openFile: openAuditFile,
+	}, nil
 }
 
 // Log writes one JSON line to the audit file.
@@ -94,10 +99,23 @@ func (l *FileLogger) Log(_ context.Context, event Event) error {
 	return err
 }
 
+// Flush forces buffered audit file state to stable storage.
+func (l *FileLogger) Flush() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.flushLocked()
+}
+
 // Close flushes and closes the audit file.
 func (l *FileLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if err := l.flushLocked(); err != nil {
+		_ = l.file.Close()
+		return err
+	}
 
 	return l.file.Close()
 }
@@ -114,6 +132,9 @@ func (l *FileLogger) rotateIfNeededLocked(nextWriteBytes int64) error {
 	if info.Size()+nextWriteBytes <= l.config.MaxBytes {
 		return nil
 	}
+	if err := l.flushLocked(); err != nil {
+		return err
+	}
 	if err := l.file.Close(); err != nil {
 		return err
 	}
@@ -121,14 +142,30 @@ func (l *FileLogger) rotateIfNeededLocked(nextWriteBytes int64) error {
 		return err
 	}
 
-	// #nosec G304 -- the audit sink path is operator configuration, not user input.
-	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := l.openFile(l.path)
 	if err != nil {
 		return err
 	}
 	l.file = file
 
 	return l.file.Chmod(0o600)
+}
+
+func (l *FileLogger) flushLocked() error {
+	return l.file.Sync()
+}
+
+type auditFile interface {
+	Write([]byte) (int, error)
+	Stat() (os.FileInfo, error)
+	Sync() error
+	Close() error
+	Chmod(os.FileMode) error
+}
+
+func openAuditFile(path string) (auditFile, error) {
+	// #nosec G304 -- the audit sink path is operator configuration, not user input.
+	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 }
 
 func (l *FileLogger) rotateBackupsLocked() error {

@@ -145,3 +145,30 @@ func TestFileLoggerWritesJSONLinesWithOwnerOnlyPermissions(t *testing.T) {
 		t.Fatalf("audit event = %#v", got)
 	}
 }
+
+func TestFileLoggerFlushesBufferedFileState(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.NewFileLogger(path)
+	if err != nil {
+		t.Fatalf("NewFileLogger returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	if err := logger.Log(context.Background(), audit.Event{
+		Time:   time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC),
+		Kind:   audit.EventAuth,
+		UserID: "alice",
+	}); err != nil {
+		t.Fatalf("Log returned error: %v", err)
+	}
+
+	if err := logger.Flush(); err != nil {
+		t.Fatalf("Flush returned error: %v", err)
+	}
+}
