@@ -3,6 +3,7 @@ package authhttp
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"io"
 	"sync"
@@ -114,7 +115,7 @@ func (s *SessionStore) ValidateCSRF(sessionID string, token string) bool {
 		return false
 	}
 
-	return session.CSRFToken == token
+	return subtle.ConstantTimeCompare([]byte(session.CSRFToken), []byte(token)) == 1
 }
 
 func randomToken(random io.Reader, size int) (string, error) {
