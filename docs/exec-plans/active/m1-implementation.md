@@ -55,6 +55,11 @@ read-only query forwarding, result masking, and structured audit logging.
 - [ ] Red: write Docker Compose protocol tests for auth, allowed setup
       statements, rejected unsupported commands, forwarded SELECT, masking, and
       metadata query rejection.
+- [ ] Red: while parser integration remains incomplete, add SQL policy boundary
+      coverage for scanner limits: `WITH ... SELECT`, `SHOW`, `DESCRIBE`,
+      function allowlist boundaries, and metadata-query rejection.
+- [ ] Green: complete parser-backed SQL classification before M1 protocol
+      forwarding is considered complete.
 - [ ] Green: implement `internal/mysqlproxy` around `go-mysql-org/go-mysql`.
 - [ ] Refactor: simplify package boundaries while preserving public contracts.
 - [ ] Static checks: run Go formatting, tests, and static analysis.
@@ -75,6 +80,12 @@ read-only query forwarding, result masking, and structured audit logging.
   The scanner is comment-aware and quote-aware for the covered M1 tests, but
   parser-backed classification remains required before protocol forwarding is
   complete.
+- Known scanner limits are intentionally fail-closed for M1 foundation work:
+  `WITH ... SELECT`, `SHOW`, and `DESCRIBE` are rejected; only `count()` is
+  allowlisted as a function-shaped read; broader expression and metadata
+  handling must be parser-backed before M1 protocol forwarding is complete.
+  Boundary tests for the interim scanner are regression coverage, not a
+  replacement for ADR 0001's parser-backed classification requirement.
 
 ## Verification
 
