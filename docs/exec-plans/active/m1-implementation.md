@@ -86,6 +86,11 @@ read-only query forwarding, result masking, and structured audit logging.
   handling must be parser-backed before M1 protocol forwarding is complete.
   Boundary tests for the interim scanner are regression coverage, not a
   replacement for ADR 0001's parser-backed classification requirement.
+- Pin `github.com/go-mysql-org/go-mysql` v1.15.0 and start `internal/mysqlproxy`
+  with compile-time coverage for `server.Handler`, `server.AuthenticationHandler`,
+  MySQL error mapping, and `caching_sha2_password` credential setup. This is an
+  API boundary spike only; forwarding and containerized client compatibility
+  remain pending.
 
 ## Verification
 
@@ -122,6 +127,12 @@ read-only query forwarding, result masking, and structured audit logging.
   usernames.
 - `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
   rejecting duplicate local auth usernames.
+- `go test ./internal/mysqlproxy` passed on 2026-06-16 after adding the
+  `go-mysql` protocol boundary spike.
+- `go test ./...` passed on 2026-06-16 after adding the `go-mysql` protocol
+  boundary spike.
+- `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
+  adding the `go-mysql` protocol boundary spike.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
