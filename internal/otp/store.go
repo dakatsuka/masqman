@@ -266,6 +266,10 @@ func (s *Store) recentSourceFailuresLocked(sourceAddr string, now time.Time) []t
 			kept = append(kept, failure)
 		}
 	}
+	if len(kept) == 0 {
+		delete(s.sources, sourceAddr)
+		return nil
+	}
 	s.sources[sourceAddr] = kept
 
 	return kept
@@ -292,6 +296,10 @@ func (s *Store) recentIssuanceLocked(
 		if issuedAt.After(windowStart) || issuedAt.Equal(windowStart) {
 			kept = append(kept, issuedAt)
 		}
+	}
+	if len(kept) == 0 {
+		delete(buckets, key)
+		return nil
 	}
 	buckets[key] = kept
 
