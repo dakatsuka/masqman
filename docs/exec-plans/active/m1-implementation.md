@@ -110,6 +110,12 @@ read-only query forwarding, result masking, and structured audit logging.
 - `go test ./...` passed on 2026-06-16 after wiring CLI `-config` validation.
 - `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
   wiring CLI `-config` validation.
+- `go test ./internal/config` passed on 2026-06-16 after requiring local auth
+  users to include username and password.
+- `go test ./...` passed on 2026-06-16 after requiring complete local auth
+  user configuration.
+- `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
+  requiring complete local auth user configuration.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.

@@ -211,6 +211,14 @@ func (c *Config) Validate() error {
 	if c.OTP.PasswordEntropyBits < 192 {
 		return fmt.Errorf("%w: OTP password entropy must be at least 192 bits", ErrInvalid)
 	}
+	for i, user := range c.Auth.LocalUsers {
+		if strings.TrimSpace(user.Username) == "" {
+			return fmt.Errorf("%w: auth local user %d username is required", ErrInvalid, i)
+		}
+		if user.Password == "" {
+			return fmt.Errorf("%w: auth local user %d password is required", ErrInvalid, i)
+		}
+	}
 	if c.RateLimits.MaxQueryBytes <= 0 || c.RateLimits.MaxResultRows <= 0 ||
 		c.RateLimits.MaxResultBytes <= 0 || c.RateLimits.MaxMySQLSessions <= 0 {
 		return fmt.Errorf("%w: resource limits must be positive", ErrInvalid)

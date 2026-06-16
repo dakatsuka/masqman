@@ -82,6 +82,34 @@ func TestValidateRejectsWeakOTPLimits(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsIncompleteLocalUsers(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		user string
+	}{
+		{name: "missing username", user: "password = \"secret\"\n"},
+		{name: "blank username", user: "username = \" \\t\"\npassword = \"secret\"\n"},
+		{name: "missing password", user: "username = \"alice\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "masqman.toml")
+			input := []byte("[[auth.local_users]]\n" + tc.user)
+			if err := os.WriteFile(path, input, 0o600); err != nil {
+				t.Fatalf("WriteFile returned error: %v", err)
+			}
+
+			_, err := config.Load(path)
+			if !errors.Is(err, config.ErrInvalid) {
+				t.Fatalf("Load error = %v, want %v", err, config.ErrInvalid)
+			}
+		})
+	}
+}
+
 func TestOTPStoreConfigConvertsEntropyBitsToBytes(t *testing.T) {
 	t.Parallel()
 
