@@ -128,6 +128,12 @@ read-only query forwarding, result masking, and structured audit logging.
   with TLS 1.2 minimum, optional CA pool from `tls_ca_file`, explicit or
   address-derived server name, and relies on config validation to keep
   `tls_skip_verify` development-only.
+- Add a deferred session handler boundary because go-mysql requires a
+  `server.Handler` before the client handshake completes and can call
+  `UseDB` for an initial database during that handshake. The deferred handler
+  applies schema/query policy immediately, records any pre-auth allowed
+  database selection, and replays it to the upstream session only after
+  post-auth activation.
 
 ## Verification
 
@@ -220,6 +226,12 @@ read-only query forwarding, result masking, and structured audit logging.
   boundary.
 - `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
   adding the upstream connector boundary.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after adding the
+  deferred session handler activation boundary.
+- `go test ./...` passed on 2026-06-17 after adding the deferred session handler
+  activation boundary.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  adding the deferred session handler activation boundary.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
