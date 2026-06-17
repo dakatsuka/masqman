@@ -107,6 +107,15 @@ read-only query forwarding, result masking, and structured audit logging.
   `internal/mysqlproxy`: allowed statements pass to the next protocol handler,
   policy rejections map to `ER_SPECIFIC_ACCESS_DENIED_ERROR`, and unsupported
   protocol surfaces remain `ER_NOT_SUPPORTED_YET`.
+- Add the first `internal/mysqlproxy` forwarding boundary: an upstream session
+  interface compatible with `*client.Conn`, a `server.Handler` adapter for
+  `COM_QUERY` and `COM_INIT_DB`, and a session handler factory that composes
+  `sqlpolicy` gating with upstream delegation. Result masking, resource limits,
+  audit events, connection ownership, and Docker protocol tests remain pending.
+- The forwarding boundary rejects upstream results that carry
+  `SERVER_MORE_RESULTS_EXISTS`, closes the upstream session, and returns a
+  generic unsupported-protocol MySQL error so later queries cannot reuse a
+  desynchronized connection.
 
 ## Verification
 
@@ -179,6 +188,14 @@ read-only query forwarding, result masking, and structured audit logging.
   contract-comment updates.
 - `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
   review-driven classifier test and contract-comment updates.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after adding the
+  upstream forwarding handler and policy-composed session handler factory.
+- `go test ./...` passed on 2026-06-17 after the mysqlproxy forwarding handler
+  boundary.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  the mysqlproxy forwarding handler boundary.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after closing upstream
+  sessions on unexpected multi-result responses.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
