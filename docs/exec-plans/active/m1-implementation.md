@@ -140,6 +140,11 @@ read-only query forwarding, result masking, and structured audit logging.
   `caching_sha2_password` credentials to the library, consumes OTP credentials
   only in the auth-success hook, records failures in the auth-failure hook, and
   supports cache invalidation after consume.
+- Compose per-client MySQL session state from the OTP auth handler, deferred
+  session handler, and upstream connector. On auth success, Masqman connects and
+  activates the upstream session before consuming the OTP; upstream connection or
+  activation failures reject the client without consuming the credential, and
+  consume failures close the just-opened upstream session.
 
 ## Verification
 
@@ -244,6 +249,12 @@ read-only query forwarding, result masking, and structured audit logging.
   authentication handler adapter.
 - `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
   adding the OTP-backed authentication handler adapter.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after composing
+  auth-success upstream activation with deferred session state.
+- `go test ./...` passed on 2026-06-17 after composing auth-success upstream
+  activation with deferred session state.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  composing auth-success upstream activation with deferred session state.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.

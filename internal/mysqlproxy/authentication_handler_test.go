@@ -120,6 +120,7 @@ type recordingVerifier struct {
 	pendingErr error
 	consumeErr error
 	failureErr error
+	events     *[]string
 
 	pendingUsername   string
 	pendingSourceAddr string
@@ -135,12 +136,14 @@ func (verifier *recordingVerifier) PendingCredential(
 ) (otp.PendingCredential, error) {
 	verifier.pendingUsername = username
 	verifier.pendingSourceAddr = sourceAddr
+	verifier.recordEvent("pending:" + username)
 
 	return verifier.pending, verifier.pendingErr
 }
 
 func (verifier *recordingVerifier) Consume(_ context.Context, username string) (auth.User, error) {
 	verifier.consumedUsername = username
+	verifier.recordEvent("consume:" + username)
 
 	return verifier.pending.User, verifier.consumeErr
 }
@@ -148,8 +151,15 @@ func (verifier *recordingVerifier) Consume(_ context.Context, username string) (
 func (verifier *recordingVerifier) RecordFailure(_ context.Context, username string, sourceAddr string) error {
 	verifier.failureUsername = username
 	verifier.failureSourceAddr = sourceAddr
+	verifier.recordEvent("failure:" + username)
 
 	return verifier.failureErr
+}
+
+func (verifier *recordingVerifier) recordEvent(event string) {
+	if verifier.events != nil {
+		*verifier.events = append(*verifier.events, event)
+	}
 }
 
 var (

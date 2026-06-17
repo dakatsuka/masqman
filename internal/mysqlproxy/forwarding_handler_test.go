@@ -101,6 +101,7 @@ type recordingUpstream struct {
 	database string
 	query    string
 	result   *mysql.Result
+	events   *[]string
 
 	initDBErr error
 	queryErr  error
@@ -110,18 +111,27 @@ type recordingUpstream struct {
 
 func (upstream *recordingUpstream) UseDB(database string) error {
 	upstream.database = database
+	upstream.recordEvent("use_db:" + database)
 
 	return upstream.initDBErr
 }
 
 func (upstream *recordingUpstream) Execute(query string, _ ...any) (*mysql.Result, error) {
 	upstream.query = query
+	upstream.recordEvent("execute:" + query)
 
 	return upstream.result, upstream.queryErr
 }
 
 func (upstream *recordingUpstream) Close() error {
 	upstream.closed = true
+	upstream.recordEvent("close")
 
 	return upstream.closeErr
+}
+
+func (upstream *recordingUpstream) recordEvent(event string) {
+	if upstream.events != nil {
+		*upstream.events = append(*upstream.events, event)
+	}
 }
