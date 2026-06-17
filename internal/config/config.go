@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -205,6 +206,11 @@ func (c *Config) Validate() error {
 	if c.Environment == EnvironmentProduction && c.Upstream.Password != "" {
 		return fmt.Errorf("%w: production upstream password must not be embedded in TOML", ErrInvalid)
 	}
+	if c.Environment == EnvironmentProduction {
+		if _, err := c.UpstreamPassword(); err != nil {
+			return err
+		}
+	}
 	if c.OTP.UsernameEntropyBits < 96 {
 		return fmt.Errorf("%w: OTP username entropy must be at least 96 bits", ErrInvalid)
 	}
@@ -256,6 +262,51 @@ func (c Config) SQLPolicyConfig() sqlpolicy.Config {
 		AllowedSchemas:    append([]string(nil), c.Setup.AllowSchemaSelection...),
 		AllowDefaultSetup: c.Setup.AllowDefaultSetup,
 	}
+}
+
+// UpstreamPassword resolves the configured upstream database password.
+//
+// Secret references take precedence over the inline development password:
+// environment variable, then file, then inline TOML value. A configured secret
+// reference must resolve to a non-empty value.
+func (c Config) UpstreamPassword() (string, error) {
+	if c.Secrets.UpstreamPasswordEnv != "" {
+		password, ok := os.LookupEnv(c.Secrets.UpstreamPasswordEnv)
+		if !ok || password == "" {
+			return "", fmt.Errorf(
+				"%w: upstream password env %q is empty or unset",
+				ErrInvalid,
+				c.Secrets.UpstreamPasswordEnv,
+			)
+		}
+
+		return password, nil
+	}
+
+	if c.Secrets.UpstreamPasswordFile != "" {
+		contents, err := os.ReadFile(c.Secrets.UpstreamPasswordFile)
+		if err != nil {
+			return "", fmt.Errorf(
+				"%w: read upstream password file %q: %w",
+				ErrInvalid,
+				c.Secrets.UpstreamPasswordFile,
+				err,
+			)
+		}
+
+		password := strings.TrimRight(string(contents), "\r\n")
+		if password == "" {
+			return "", fmt.Errorf(
+				"%w: upstream password file %q is empty",
+				ErrInvalid,
+				c.Secrets.UpstreamPasswordFile,
+			)
+		}
+
+		return password, nil
+	}
+
+	return c.Upstream.Password, nil
 }
 
 func (c *Config) applyDefaults(defaults Config) {

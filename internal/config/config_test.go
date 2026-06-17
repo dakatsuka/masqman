@@ -28,7 +28,11 @@ func TestValidateAppliesDefaultsAndRequiresProductionTLS(t *testing.T) {
 	cfg.HTTP.TLS.KeyFile = "http.key"
 	cfg.MySQL.TLS.CertFile = "mysql.crt"
 	cfg.MySQL.TLS.KeyFile = "mysql.key"
-	cfg.Secrets.UpstreamPasswordEnv = "MASQMAN_UPSTREAM_PASSWORD"
+	secretPath := filepath.Join(t.TempDir(), "upstream-password")
+	if err := os.WriteFile(secretPath, []byte("secret\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	cfg.Secrets.UpstreamPasswordFile = secretPath
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate returned error: %v", err)
 	}
@@ -195,6 +199,121 @@ func TestSQLPolicyConfigMapsSetupPolicy(t *testing.T) {
 	}
 }
 
+func TestUpstreamPasswordUsesConfiguredSecretSources(t *testing.T) {
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("MASQMAN_TEST_UPSTREAM_PASSWORD", "from-env")
+		cfg := config.Default()
+		cfg.Upstream.Password = "inline"
+		cfg.Secrets.UpstreamPasswordEnv = "MASQMAN_TEST_UPSTREAM_PASSWORD"
+
+		password, err := cfg.UpstreamPassword()
+		if err != nil {
+			t.Fatalf("UpstreamPassword() error = %v, want nil", err)
+		}
+		if password != "from-env" {
+			t.Fatalf("UpstreamPassword() = %q, want from-env", password)
+		}
+	})
+
+	t.Run("file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "upstream-password")
+		if err := os.WriteFile(path, []byte("from-file\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+		cfg := config.Default()
+		cfg.Upstream.Password = "inline"
+		cfg.Secrets.UpstreamPasswordFile = path
+
+		password, err := cfg.UpstreamPassword()
+		if err != nil {
+			t.Fatalf("UpstreamPassword() error = %v, want nil", err)
+		}
+		if password != "from-file" {
+			t.Fatalf("UpstreamPassword() = %q, want from-file", password)
+		}
+	})
+
+	t.Run("inline", func(t *testing.T) {
+		cfg := config.Default()
+		cfg.Upstream.Password = "inline"
+
+		password, err := cfg.UpstreamPassword()
+		if err != nil {
+			t.Fatalf("UpstreamPassword() error = %v, want nil", err)
+		}
+		if password != "inline" {
+			t.Fatalf("UpstreamPassword() = %q, want inline", password)
+		}
+	})
+}
+
+func TestUpstreamPasswordRejectsMissingSecretValues(t *testing.T) {
+	t.Run("empty env", func(t *testing.T) {
+		t.Setenv("MASQMAN_TEST_EMPTY_PASSWORD", "")
+
+		cfg := config.Default()
+		cfg.Secrets.UpstreamPasswordEnv = "MASQMAN_TEST_EMPTY_PASSWORD"
+
+		_, err := cfg.UpstreamPassword()
+		if !errors.Is(err, config.ErrInvalid) {
+			t.Fatalf("UpstreamPassword() error = %v, want %v", err, config.ErrInvalid)
+		}
+	})
+
+	t.Run("file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "upstream-password")
+		if err := os.WriteFile(path, []byte("\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+		cfg := config.Default()
+		cfg.Secrets.UpstreamPasswordFile = path
+
+		_, err := cfg.UpstreamPassword()
+		if !errors.Is(err, config.ErrInvalid) {
+			t.Fatalf("UpstreamPassword() error = %v, want %v", err, config.ErrInvalid)
+		}
+	})
+}
+
+func TestLoadRejectsProductionUnresolvedUpstreamSecrets(t *testing.T) {
+	t.Run("empty env", func(t *testing.T) {
+		t.Setenv("MASQMAN_TEST_EMPTY_PASSWORD", "")
+
+		path := filepath.Join(t.TempDir(), "masqman.toml")
+		if err := os.WriteFile(path, productionConfigWithSecretReference(`
+[secrets]
+upstream_password_env = "MASQMAN_TEST_EMPTY_PASSWORD"
+`), 0o600); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+
+		_, err := config.Load(path)
+		if !errors.Is(err, config.ErrInvalid) {
+			t.Fatalf("Load error = %v, want %v", err, config.ErrInvalid)
+		}
+	})
+
+	t.Run("empty file", func(t *testing.T) {
+		secretPath := filepath.Join(t.TempDir(), "upstream-password")
+		if err := os.WriteFile(secretPath, []byte("\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+
+		path := filepath.Join(t.TempDir(), "masqman.toml")
+		if err := os.WriteFile(path, productionConfigWithSecretReference(`
+[secrets]
+upstream_password_file = "`+secretPath+`"
+`), 0o600); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+
+		_, err := config.Load(path)
+		if !errors.Is(err, config.ErrInvalid) {
+			t.Fatalf("Load error = %v, want %v", err, config.ErrInvalid)
+		}
+	})
+}
+
 func TestValidateAppliesAuditDefaultPath(t *testing.T) {
 	t.Parallel()
 
@@ -290,4 +409,26 @@ func TestLoadRejectsUnknownTOMLKeys(t *testing.T) {
 	if !errors.Is(err, config.ErrInvalid) {
 		t.Fatalf("Load error = %v, want %v", err, config.ErrInvalid)
 	}
+}
+
+func productionConfigWithSecretReference(secretReference string) []byte {
+	return []byte(`
+environment = "production"
+
+[http]
+listen_addr = "127.0.0.1:8080"
+
+[http.tls]
+enabled = true
+cert_file = "http.crt"
+key_file = "http.key"
+
+[mysql]
+listen_addr = "127.0.0.1:3307"
+
+[mysql.tls]
+enabled = true
+cert_file = "mysql.crt"
+key_file = "mysql.key"
+` + secretReference)
 }

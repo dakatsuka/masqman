@@ -116,6 +116,12 @@ read-only query forwarding, result masking, and structured audit logging.
   `SERVER_MORE_RESULTS_EXISTS`, closes the upstream session, and returns a
   generic unsupported-protocol MySQL error so later queries cannot reuse a
   desynchronized connection.
+- `Config.UpstreamPassword` is the M1 boundary for resolving the dedicated
+  upstream database account password. Environment variable references take
+  precedence over file references, file references take precedence over inline
+  development TOML, configured secret references must resolve to non-empty
+  values before production configuration is accepted, and password files trim
+  only trailing CR/LF line endings.
 
 ## Verification
 
@@ -196,6 +202,12 @@ read-only query forwarding, result masking, and structured audit logging.
   the mysqlproxy forwarding handler boundary.
 - `go test ./internal/mysqlproxy` passed on 2026-06-17 after closing upstream
   sessions on unexpected multi-result responses.
+- `go test ./internal/config` passed on 2026-06-17 after adding upstream
+  password secret resolution.
+- `go test ./...` passed on 2026-06-17 after adding upstream password secret
+  resolution.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  adding upstream password secret resolution.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
