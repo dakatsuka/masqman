@@ -8,7 +8,35 @@ import (
 
 	"github.com/dakatsuka/masqman/internal/config"
 	"github.com/dakatsuka/masqman/internal/otp"
+
+	"github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/go-mysql-org/go-mysql/packet"
+	"github.com/go-mysql-org/go-mysql/server"
 )
+
+func TestSessionAuthenticationHandlerRejectsNonTLSWhenTLSIsRequired(t *testing.T) {
+	t.Parallel()
+
+	connector := &recordingUpstreamConnector{}
+	verifier := &recordingVerifier{}
+	handler := newSessionAuthenticationHandler(
+		newOTPAuthenticationHandler(verifier, "10.0.0.1:60000", nil),
+		connector,
+		newDeferredSessionHandler(testPolicyConfig()),
+		true,
+	)
+
+	err := handler.OnAuthSuccess(&server.Conn{
+		Conn: packet.NewConn(&recordingConn{remoteAddr: "10.0.0.1:60000"}),
+	})
+	assertMySQLErrorCode(t, err, mysql.ER_INSECURE_PLAIN_TEXT)
+	if connector.connected {
+		t.Fatal("upstream connector was called for non-TLS client")
+	}
+	if verifier.consumedUsername != "" {
+		t.Fatalf("Consume username = %q, want no consume", verifier.consumedUsername)
+	}
+}
 
 func TestSessionAuthenticationHandlerActivatesUpstreamBeforeConsumingOTP(t *testing.T) {
 	t.Parallel()
@@ -25,6 +53,7 @@ func TestSessionAuthenticationHandlerActivatesUpstreamBeforeConsumingOTP(t *test
 		newOTPAuthenticationHandler(verifier, "10.0.0.1:60000", nil),
 		connector,
 		session,
+		false,
 	)
 
 	if err := handler.recordAuthSuccess("alice-otp", "127.0.0.1:3307"); err != nil {
@@ -55,6 +84,7 @@ func TestSessionAuthenticationHandlerDoesNotConsumeWhenUpstreamConnectFails(t *t
 		newOTPAuthenticationHandler(verifier, "10.0.0.1:60000", nil),
 		connector,
 		newDeferredSessionHandler(testPolicyConfig()),
+		false,
 	)
 
 	err := handler.recordAuthSuccess("alice-otp", "127.0.0.1:3307")
@@ -81,6 +111,7 @@ func TestSessionAuthenticationHandlerClosesUpstreamAndDoesNotConsumeWhenActivati
 		newOTPAuthenticationHandler(verifier, "10.0.0.1:60000", nil),
 		connector,
 		session,
+		false,
 	)
 
 	err := handler.recordAuthSuccess("alice-otp", "127.0.0.1:3307")
@@ -105,6 +136,7 @@ func TestSessionAuthenticationHandlerClosesUpstreamWhenConsumeFails(t *testing.T
 		newOTPAuthenticationHandler(verifier, "10.0.0.1:60000", nil),
 		connector,
 		newDeferredSessionHandler(testPolicyConfig()),
+		false,
 	)
 
 	err := handler.recordAuthSuccess("alice-otp", "127.0.0.1:3307")

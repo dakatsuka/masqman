@@ -2,10 +2,12 @@ package mysqlproxy
 
 import (
 	"context"
+	"crypto/tls"
 
 	appconfig "github.com/dakatsuka/masqman/internal/config"
 	"github.com/dakatsuka/masqman/internal/otp"
 
+	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/server"
 )
 
@@ -17,6 +19,7 @@ type sessionAuthenticationHandler struct {
 	credentials *otpAuthenticationHandler
 	connector   upstreamSessionConnector
 	session     *deferredSessionHandler
+	requireTLS  bool
 }
 
 type clientSessionConfig struct {
@@ -25,6 +28,7 @@ type clientSessionConfig struct {
 	RemoteAddr        string
 	CacheInvalidator  cacheInvalidator
 	UpstreamConnector upstreamSessionConnector
+	RequireTLS        bool
 }
 
 type clientSession struct {
@@ -43,6 +47,7 @@ func newClientSession(config clientSessionConfig) clientSession {
 		newOTPAuthenticationHandler(config.Verifier, config.RemoteAddr, config.CacheInvalidator),
 		connector,
 		sessionHandler,
+		config.RequireTLS,
 	)
 
 	return clientSession{
@@ -72,11 +77,13 @@ func newSessionAuthenticationHandler(
 	credentials *otpAuthenticationHandler,
 	connector upstreamSessionConnector,
 	session *deferredSessionHandler,
+	requireTLS bool,
 ) *sessionAuthenticationHandler {
 	return &sessionAuthenticationHandler{
 		credentials: credentials,
 		connector:   connector,
 		session:     session,
+		requireTLS:  requireTLS,
 	}
 }
 
@@ -87,6 +94,10 @@ func (handler *sessionAuthenticationHandler) GetCredential(
 }
 
 func (handler *sessionAuthenticationHandler) OnAuthSuccess(conn *server.Conn) error {
+	if handler.requireTLS && !isTLSConnection(conn) {
+		return mysql.NewDefaultError(mysql.ER_INSECURE_PLAIN_TEXT)
+	}
+
 	return handler.recordAuthSuccess(conn.GetUser(), conn.LocalAddr().String())
 }
 
@@ -109,6 +120,15 @@ func (handler *sessionAuthenticationHandler) recordAuthSuccess(username string, 
 	}
 
 	return nil
+}
+
+func isTLSConnection(conn *server.Conn) bool {
+	if conn == nil || conn.Conn == nil {
+		return false
+	}
+	_, ok := conn.Conn.Conn.(*tls.Conn)
+
+	return ok
 }
 
 var _ server.AuthenticationHandler = (*sessionAuthenticationHandler)(nil)

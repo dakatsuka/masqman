@@ -82,6 +82,7 @@ func (handler *clientConnectionHandler) ServeConn(conn net.Conn) error {
 		RemoteAddr:        conn.RemoteAddr().String(),
 		CacheInvalidator:  handler.protocolServer,
 		UpstreamConnector: handler.upstreamConnector,
+		RequireTLS:        handler.config.MySQL.TLS.Enabled,
 	})
 	protocolConn, err := handler.protocolServer.NewConn(conn, session.AuthHandler, session.Handler)
 	if err != nil {

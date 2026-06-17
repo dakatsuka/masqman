@@ -164,6 +164,15 @@ read-only query forwarding, result masking, and structured audit logging.
   connection after go-mysql has emitted the error packet. Normal client-side
   protocol close, such as `COM_QUIT`, closes the upstream session and ends the
   loop without treating the close as an error.
+- Add a MySQL proxy server boundary that owns the TCP listener accept loop,
+  dispatches each accepted client connection to a per-client connection handler,
+  and waits for started connection handlers before `Serve` returns. The real
+  constructor builds a go-mysql server with `caching_sha2_password`; configured
+  MySQL listener TLS loads the configured certificate/key, while development
+  non-TLS listener mode generates an RSA key for caching SHA-2 full auth. When
+  MySQL listener TLS is enabled, Masqman rejects non-TLS client authentication
+  before opening the upstream session or consuming the OTP because go-mysql
+  advertises TLS support but does not by itself make TLS mandatory.
 
 ## Verification
 
@@ -288,6 +297,12 @@ read-only query forwarding, result masking, and structured audit logging.
 - `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
   fixing terminal handler errors, non-MySQL upstream error cleanup, and OTP
   consume-failure cleanup paths.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after adding the MySQL
+  listener server boundary.
+- `go test ./...` passed on 2026-06-17 after adding the MySQL listener server
+  boundary.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  adding the MySQL listener server boundary.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
