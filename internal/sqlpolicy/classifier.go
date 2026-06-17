@@ -1,7 +1,15 @@
 // Package sqlpolicy classifies SQL statements before proxy forwarding.
 package sqlpolicy
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/pingcap/tidb/pkg/parser"
+	"github.com/pingcap/tidb/pkg/parser/ast"
+
+	// Register TiDB's parser value-expression driver.
+	_ "github.com/pingcap/tidb/pkg/parser/test_driver"
+)
 
 // DecisionKind is the proxy action selected for one text-protocol statement.
 type DecisionKind string
@@ -17,10 +25,37 @@ const (
 	Reject DecisionKind = "reject"
 )
 
+// ExpressionKind identifies the safe expression facts derived from a SELECT list.
+type ExpressionKind string
+
+const (
+	// ExpressionUnknown means the classifier could not prove a narrower expression fact.
+	ExpressionUnknown ExpressionKind = "unknown"
+	// ExpressionColumn means the result expression is a column reference.
+	ExpressionColumn ExpressionKind = "column"
+	// ExpressionLiteral means the result expression is an origin-free literal.
+	ExpressionLiteral ExpressionKind = "literal"
+	// ExpressionSafeBuiltin means the expression is an allowed origin-free builtin probe.
+	ExpressionSafeBuiltin ExpressionKind = "safe_builtin"
+	// ExpressionCountStar means the expression is exactly COUNT(*).
+	ExpressionCountStar ExpressionKind = "count_star"
+)
+
 // Decision describes the SQL policy result and a stable generic reason.
 type Decision struct {
-	Kind   DecisionKind
-	Reason string
+	Kind              DecisionKind
+	Reason            string
+	ExpressionContext []ExpressionContext
+}
+
+// ExpressionContext describes a parsed SELECT-list expression fact that result
+// masking can combine with returned MySQL column metadata. Consumers must
+// branch on Kind first; SafeBuiltin only annotates built-in or aggregate
+// expression kinds that are explicitly safe to pass through.
+type ExpressionContext struct {
+	Kind         ExpressionKind
+	FunctionName string
+	SafeBuiltin  bool
 }
 
 // Classifier decides whether a text SQL statement is safe for M1 forwarding.
@@ -44,7 +79,7 @@ type StaticClassifier struct {
 func NewClassifier(config Config) *StaticClassifier {
 	allowed := make(map[string]struct{}, len(config.AllowedSchemas))
 	for _, schema := range config.AllowedSchemas {
-		allowed[strings.ToLower(schema)] = struct{}{}
+		allowed[schema] = struct{}{}
 	}
 
 	return &StaticClassifier{
@@ -59,9 +94,6 @@ func (c *StaticClassifier) Classify(statement string) Decision {
 	if normalized == "" {
 		return Decision{Kind: Reject, Reason: "empty_statement"}
 	}
-	if hasMultipleStatements(normalized) {
-		return Decision{Kind: Reject, Reason: "multiple_statements"}
-	}
 	if strings.Contains(normalized, "/*!") {
 		return Decision{Kind: Reject, Reason: "executable_comment"}
 	}
@@ -70,39 +102,343 @@ func (c *StaticClassifier) Classify(statement string) Decision {
 	if hasTrailingStatementTerminator(statement) {
 		lower = trimStatementTerminator(lower)
 	}
-	switch {
-	case c.allowDefaultSetup && isAllowedSetup(lower):
-		return Decision{Kind: AllowSetup, Reason: "allowed_setup"}
-	case strings.HasPrefix(lower, "use "):
-		return c.classifyUse(lower)
-	case isOperationalRead(lower):
-		return Decision{Kind: AllowOperationalRead, Reason: "allowed_operational_read"}
-	case !strings.HasPrefix(lower, "select "):
-		return Decision{Kind: Reject, Reason: "unsupported_statement"}
-	case containsAny(lower,
-		" into outfile",
-		" into dumpfile",
-		" for update",
-		" for share",
-		" lock in share mode",
-		" union ",
-	) || referencesSystemSchema(lower):
-		return Decision{Kind: Reject, Reason: "unsafe_read"}
-	case hasUnapprovedFunctionCall(lower):
-		return Decision{Kind: Reject, Reason: "routine_not_allowed"}
+
+	parsed, _, err := parser.New().ParseSQL(statement)
+	if err != nil {
+		return Decision{Kind: Reject, Reason: "parse_error"}
+	}
+	if len(parsed) != 1 {
+		return Decision{Kind: Reject, Reason: "multiple_statements"}
+	}
+
+	switch stmt := parsed[0].(type) {
+	case *ast.SetStmt:
+		return c.classifySet(stmt, lower)
+	case *ast.UseStmt:
+		return c.classifyUseName(stmt.DBName)
+	case *ast.SelectStmt:
+		return c.classifySelect(stmt, lower, statement)
 	default:
-		return Decision{Kind: AllowRead, Reason: "read_only"}
+		return Decision{Kind: Reject, Reason: "unsupported_statement"}
 	}
 }
 
-func (c *StaticClassifier) classifyUse(lower string) Decision {
-	schema := strings.TrimSpace(strings.TrimPrefix(lower, "use "))
-	schema = strings.Trim(schema, "`")
+func (c *StaticClassifier) classifySelect(stmt *ast.SelectStmt, lower string, source string) Decision {
+	contexts := expressionContexts(stmt, source)
+	if isOperationalRead(lower) {
+		return Decision{
+			Kind:              AllowOperationalRead,
+			Reason:            "allowed_operational_read",
+			ExpressionContext: contexts,
+		}
+	}
+	if stmt.Kind != ast.SelectStmtKindSelect {
+		return Decision{Kind: Reject, Reason: "unsupported_statement"}
+	}
+
+	safety := &selectSafetyVisitor{source: source}
+	stmt.Accept(safety) //nolint:errcheck // The visitor records fail-closed policy state.
+	switch {
+	case safety.unsafeRead:
+		return Decision{Kind: Reject, Reason: "unsafe_read"}
+	case safety.disallowedFunction:
+		return Decision{Kind: Reject, Reason: "routine_not_allowed"}
+	default:
+		return Decision{Kind: AllowRead, Reason: "read_only", ExpressionContext: contexts}
+	}
+}
+
+func (c *StaticClassifier) classifySet(_ *ast.SetStmt, lower string) Decision {
+	if c.allowDefaultSetup && isAllowedSetup(lower) {
+		return Decision{Kind: AllowSetup, Reason: "allowed_setup"}
+	}
+
+	return Decision{Kind: Reject, Reason: "unsupported_statement"}
+}
+
+func (c *StaticClassifier) classifyUseName(schema string) Decision {
+	schema = strings.TrimSpace(schema)
 	if _, ok := c.allowedSchemas[schema]; ok {
 		return Decision{Kind: AllowSetup, Reason: "allowed_schema"}
 	}
 
 	return Decision{Kind: Reject, Reason: "schema_not_allowed"}
+}
+
+type selectSafetyVisitor struct {
+	source             string
+	unsafeRead         bool
+	disallowedFunction bool
+}
+
+func (visitor *selectSafetyVisitor) Enter(node ast.Node) (ast.Node, bool) {
+	switch current := node.(type) {
+	case *ast.SelectStmt:
+		if current.SelectIntoOpt != nil || hasSelectLock(current) {
+			visitor.unsafeRead = true
+		}
+	case *ast.TableName:
+		if isSystemSchema(current.Schema.L) {
+			visitor.unsafeRead = true
+		}
+	case *ast.ColumnName:
+		if isSystemSchema(current.Schema.L) {
+			visitor.unsafeRead = true
+		}
+	case *ast.FuncCallExpr:
+		visitor.disallowedFunction = true
+
+		return node, true
+	case *ast.AggregateFuncExpr:
+		if !isAllowedCountAggregate(current, visitor.source) {
+			visitor.disallowedFunction = true
+		}
+
+		return node, true
+	case *ast.WindowFuncExpr:
+		visitor.disallowedFunction = true
+
+		return node, true
+	}
+
+	return node, false
+}
+
+func (visitor *selectSafetyVisitor) Leave(node ast.Node) (ast.Node, bool) {
+	return node, true
+}
+
+func hasSelectLock(stmt *ast.SelectStmt) bool {
+	return stmt.LockInfo != nil && stmt.LockInfo.LockType != ast.SelectLockNone
+}
+
+func isSystemSchema(schema string) bool {
+	switch strings.ToLower(schema) {
+	case "information_schema", "performance_schema", "mysql", "sys":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedCountAggregate(expr *ast.AggregateFuncExpr, source string) bool {
+	if !strings.EqualFold(expr.F, ast.AggFuncCount) || expr.Distinct {
+		return false
+	}
+
+	return compactSQLCallAt(source, expr.OriginTextPosition()) == "count(*)"
+}
+
+func expressionContexts(stmt *ast.SelectStmt, source string) []ExpressionContext {
+	if stmt.Fields == nil || len(stmt.Fields.Fields) == 0 {
+		return nil
+	}
+
+	contexts := make([]ExpressionContext, 0, len(stmt.Fields.Fields))
+	for _, field := range stmt.Fields.Fields {
+		if field.WildCard != nil {
+			return nil
+		}
+		contexts = append(contexts, expressionContext(field.Expr, source))
+	}
+
+	return contexts
+}
+
+func expressionContext(expr ast.ExprNode, source string) ExpressionContext {
+	switch current := expr.(type) {
+	case *ast.ColumnNameExpr:
+		return ExpressionContext{Kind: ExpressionColumn}
+	case ast.ValueExpr:
+		return ExpressionContext{Kind: ExpressionLiteral}
+	case *ast.FuncCallExpr:
+		if isSafeBuiltinFunction(current.FnName.L) && len(current.Args) == 0 && current.Schema.L == "" {
+			return ExpressionContext{
+				Kind:         ExpressionSafeBuiltin,
+				FunctionName: current.FnName.L,
+				SafeBuiltin:  true,
+			}
+		}
+	case *ast.VariableExpr:
+		if current.IsSystem && !current.ExplicitScope && isOperationalVariable(current.Name) {
+			return ExpressionContext{
+				Kind:         ExpressionSafeBuiltin,
+				FunctionName: "@@" + strings.ToLower(current.Name),
+				SafeBuiltin:  true,
+			}
+		}
+	case *ast.AggregateFuncExpr:
+		if isAllowedCountAggregate(current, source) {
+			return ExpressionContext{
+				Kind:         ExpressionCountStar,
+				FunctionName: ast.AggFuncCount,
+				SafeBuiltin:  true,
+			}
+		}
+	}
+
+	return ExpressionContext{Kind: ExpressionUnknown}
+}
+
+func isSafeBuiltinFunction(name string) bool {
+	switch strings.ToLower(name) {
+	case "now", "database":
+		return true
+	default:
+		return false
+	}
+}
+
+func isOperationalVariable(name string) bool {
+	switch strings.ToLower(name) {
+	case "version",
+		"version_comment",
+		"max_allowed_packet",
+		"character_set_client",
+		"character_set_connection",
+		"character_set_results",
+		"collation_connection":
+		return true
+	default:
+		return false
+	}
+}
+
+func compactSQLCallAt(source string, offset int) string {
+	if offset < 0 || offset >= len(source) {
+		return ""
+	}
+	end := callEndAt(source, offset)
+	if end < 0 {
+		return ""
+	}
+
+	return compactSQLSyntax(source[offset:end])
+}
+
+func callEndAt(source string, offset int) int {
+	depth := 0
+	for idx := offset; idx < len(source); {
+		switch {
+		case source[idx] == '\'' || source[idx] == '"':
+			idx = skipQuotedString(source, idx)
+		case source[idx] == '`':
+			idx = skipQuotedIdentifier(source, idx)
+		case isDashDashComment(source, idx):
+			idx = skipLineComment(source, idx+2)
+		case source[idx] == '#':
+			idx = skipLineComment(source, idx+1)
+		case source[idx] == '/' && idx+1 < len(source) && source[idx+1] == '*' &&
+			!isVersionedComment(source, idx):
+			idx = skipBlockComment(source, idx+2)
+		case source[idx] == '(':
+			depth++
+			idx++
+		case source[idx] == ')':
+			if depth == 0 {
+				return -1
+			}
+			depth--
+			idx++
+			if depth == 0 {
+				return idx
+			}
+		default:
+			idx++
+		}
+	}
+
+	return -1
+}
+
+func compactSQLSyntax(source string) string {
+	var out strings.Builder
+	for idx := 0; idx < len(source); {
+		switch {
+		case isSpaceByte(source[idx]):
+			idx++
+		case isDashDashComment(source, idx):
+			idx = skipLineComment(source, idx+2)
+		case source[idx] == '#':
+			idx = skipLineComment(source, idx+1)
+		case source[idx] == '/' && idx+1 < len(source) && source[idx+1] == '*' &&
+			!isVersionedComment(source, idx):
+			idx = skipBlockComment(source, idx+2)
+		default:
+			out.WriteByte(toLowerASCII(source[idx]))
+			idx++
+		}
+	}
+
+	return out.String()
+}
+
+func skipQuotedString(source string, index int) int {
+	quote := source[index]
+	index++
+	for index < len(source) {
+		if source[index] == '\\' && index+1 < len(source) {
+			index += 2
+			continue
+		}
+		if source[index] == quote {
+			index++
+			if index < len(source) && source[index] == quote {
+				index++
+				continue
+			}
+
+			return index
+		}
+		index++
+	}
+
+	return len(source)
+}
+
+func skipQuotedIdentifier(source string, index int) int {
+	index++
+	for index < len(source) {
+		if source[index] == '`' {
+			index++
+			if index < len(source) && source[index] == '`' {
+				index++
+				continue
+			}
+
+			return index
+		}
+		index++
+	}
+
+	return len(source)
+}
+
+func skipLineComment(source string, index int) int {
+	for index < len(source) && source[index] != '\n' {
+		index++
+	}
+
+	return index
+}
+
+func skipBlockComment(source string, index int) int {
+	for index+1 < len(source) && !isBlockCommentEnd(source, index) {
+		index++
+	}
+	if index+1 < len(source) {
+		return index + 2
+	}
+
+	return len(source)
+}
+
+func toLowerASCII(ch byte) byte {
+	if ch >= 'A' && ch <= 'Z' {
+		return ch + ('a' - 'A')
+	}
+
+	return ch
 }
 
 func normalize(statement string) string {
@@ -236,13 +572,6 @@ func scanSQL(statement string) string {
 	return out.String()
 }
 
-func hasMultipleStatements(statement string) bool {
-	trimmed := strings.TrimSpace(statement)
-	withoutTrailing := strings.TrimSuffix(trimmed, ";")
-
-	return strings.Contains(withoutTrailing, ";")
-}
-
 func isOperationalRead(lower string) bool {
 	probe := strings.TrimSuffix(lower, ";")
 	probe = strings.TrimSuffix(probe, " limit 1")
@@ -297,84 +626,8 @@ func isSimpleCharsetValue(value string) bool {
 	return true
 }
 
-func containsAny(value string, needles ...string) bool {
-	for _, needle := range needles {
-		if strings.Contains(value, needle) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func referencesSystemSchema(lower string) bool {
-	for _, schema := range []string{"information_schema", "performance_schema", "mysql", "sys"} {
-		for start := 0; ; {
-			idx := strings.Index(lower[start:], schema)
-			if idx < 0 {
-				break
-			}
-			idx += start
-			after := idx + len(schema)
-			if isIdentifierBoundary(lower, idx-1) && schemaQualifierFollows(lower, after) {
-				return true
-			}
-			start = after
-		}
-	}
-
-	return false
-}
-
-func schemaQualifierFollows(lower string, index int) bool {
-	for index < len(lower) && lower[index] == ' ' {
-		index++
-	}
-
-	return index < len(lower) && lower[index] == '.'
-}
-
-func isIdentifierBoundary(value string, index int) bool {
-	if index < 0 {
-		return true
-	}
-	ch := value[index]
-
-	return !isIdentifierByte(ch)
-}
-
-func isIdentifierByte(ch byte) bool {
-	return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_'
-}
-
 func isSpaceByte(ch byte) bool {
 	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f'
-}
-
-func hasUnapprovedFunctionCall(lower string) bool {
-	remainder := lower
-	for {
-		idx := strings.Index(remainder, "(")
-		if idx < 0 {
-			return false
-		}
-		before := strings.TrimSpace(remainder[:idx])
-		closeIdx := strings.IndexByte(remainder[idx+1:], ')')
-		if closeIdx < 0 {
-			return true
-		}
-		args := remainder[idx+1 : idx+1+closeIdx]
-		if functionName(before) == "count" && isAllowedCountArgs(args) {
-			remainder = remainder[idx+closeIdx+2:]
-			continue
-		}
-
-		return true
-	}
-}
-
-func isAllowedCountArgs(args string) bool {
-	return strings.TrimSpace(args) == "*"
 }
 
 func isBlockCommentEnd(statement string, index int) bool {
@@ -397,20 +650,4 @@ func isDashDashComment(statement string, index int) bool {
 func isVersionedComment(statement string, index int) bool {
 	return index+2 < len(statement) && statement[index] == '/' &&
 		statement[index+1] == '*' && statement[index+2] == '!'
-}
-
-func functionName(beforeCall string) string {
-	beforeCall = strings.TrimSpace(beforeCall)
-	end := len(beforeCall)
-	start := end
-	for start > 0 {
-		ch := beforeCall[start-1]
-		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' {
-			start--
-			continue
-		}
-		break
-	}
-
-	return beforeCall[start:end]
 }

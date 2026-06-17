@@ -58,7 +58,7 @@ read-only query forwarding, result masking, and structured audit logging.
 - [x] Red: while parser integration remains incomplete, add SQL policy boundary
       coverage for scanner limits: `WITH ... SELECT`, `SHOW`, `DESCRIBE`,
       function allowlist boundaries, and metadata-query rejection.
-- [ ] Green: complete parser-backed SQL classification before M1 protocol
+- [x] Green: complete parser-backed SQL classification before M1 protocol
       forwarding is considered complete.
 - [ ] Green: implement `internal/mysqlproxy` around `go-mysql-org/go-mysql`.
 - [ ] Refactor: simplify package boundaries while preserving public contracts.
@@ -75,17 +75,29 @@ read-only query forwarding, result masking, and structured audit logging.
 - Keep expression and metadata policies built-in for M1.
 - Treat read-only startup probes as `AllowOperationalRead`, not `AllowSetup`.
 - Issue OTPs from `POST /credentials`, not automatically from login.
-- Implement the first `sqlpolicy` package as a conservative built-in scanner
-  while the `go-mysql-org/go-mysql` and TiDB parser spike remains incomplete.
-  The scanner is comment-aware and quote-aware for the covered M1 tests, but
-  parser-backed classification remains required before protocol forwarding is
-  complete.
-- Known scanner limits are intentionally fail-closed for M1 foundation work:
-  `WITH ... SELECT`, `SHOW`, and `DESCRIBE` are rejected; only `COUNT(*)` is
-  allowlisted as a function-shaped read; broader expression and metadata
-  handling must be parser-backed before M1 protocol forwarding is complete.
-  Boundary tests for the interim scanner are regression coverage, not a
-  replacement for ADR 0001's parser-backed classification requirement.
+- Replace the interim `sqlpolicy` scanner classifier with TiDB parser-backed
+  statement classification. Parser failures and multiple statements fail
+  closed; statement-type dispatch handles `SELECT`, `SET`, and `USE`; AST
+  traversal rejects system-schema references, `SELECT ... INTO`, locking reads,
+  routine calls, window functions, and aggregates other than source-shaped
+  `COUNT(*)`.
+- `WITH ... SELECT` is now allowed when the parsed AST is otherwise safe.
+  `SHOW`, `DESCRIBE`, system metadata queries, unsafe CTE bodies, and unsupported
+  statement classes remain rejected. The tokenizer helper remains only for
+  comment/literal normalization, exact setup allowlist checks, built-in
+  operational probe matching, executable-comment rejection, and raw source
+  validation that distinguishes `COUNT(*)` from identifiers such as
+  ``COUNT(`*`)``.
+- `sqlpolicy.Decision` now carries parser-derived `ExpressionContext` facts for
+  non-star SELECT projections so result masking can later combine statement
+  facts with returned MySQL field metadata. `SELECT *` intentionally returns no
+  expression facts and relies on physical metadata. Consumers must branch on
+  `ExpressionContext.Kind`; `SafeBuiltin` is only an annotation for built-in or
+  aggregate expression kinds explicitly safe to pass through, not a replacement
+  for the kind.
+- Schema selection policy is exact-match for both SQL `USE` and protocol
+  `COM_INIT_DB`; M1 does not case-fold configured schema names because MySQL
+  deployments can be case-sensitive.
 - Pin `github.com/go-mysql-org/go-mysql` v1.15.0 and start `internal/mysqlproxy`
   with compile-time coverage for `server.Handler`, `server.AuthenticationHandler`,
   MySQL error mapping, and `caching_sha2_password` credential setup. This is an
@@ -142,6 +154,31 @@ read-only query forwarding, result masking, and structured audit logging.
 - `go test ./...` passed on 2026-06-16 after adding the `sqlpolicy` gate.
 - `go tool golangci-lint run ./...` passed on 2026-06-16 with 0 issues after
   adding the `sqlpolicy` gate.
+- `go test ./internal/sqlpolicy` passed on 2026-06-17 after replacing the
+  interim scanner classifier with TiDB parser-backed classification.
+- `go test ./...` passed on 2026-06-17 after parser-backed SQL classification.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  parser-backed SQL classification.
+- `go test ./internal/sqlpolicy` passed on 2026-06-17 after code review fixes
+  for quoted-star `COUNT`, exact schema matching, and expression facts.
+- `go test ./...` passed on 2026-06-17 after parser-backed classifier code
+  review fixes.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  parser-backed classifier code review fixes.
+- `go test ./internal/sqlpolicy` passed on 2026-06-17 after re-review fix for
+  scoped system-variable expression facts.
+- `go test ./...` passed on 2026-06-17 after the scoped-variable expression
+  facts fix.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  the scoped-variable expression facts fix.
+- `go test ./internal/sqlpolicy` passed on 2026-06-17 after adding review-driven
+  coverage for routine rejection inside subqueries and CTEs, non-operational
+  `DATABASE()` calls, intended `SELECT 1+1` and grouped `COUNT(*)` reads, and
+  literal expression context semantics.
+- `go test ./...` passed on 2026-06-17 after review-driven classifier test and
+  contract-comment updates.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  review-driven classifier test and contract-comment updates.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
