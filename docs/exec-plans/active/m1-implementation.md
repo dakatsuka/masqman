@@ -122,6 +122,12 @@ read-only query forwarding, result masking, and structured audit logging.
   development TOML, configured secret references must resolve to non-empty
   values before production configuration is accepted, and password files trim
   only trailing CR/LF line endings.
+- Add an `internal/mysqlproxy` upstream connector boundary before wiring real
+  session startup. The connector resolves `config.Config` into a go-mysql client
+  connection spec, uses `Config.UpstreamPassword`, builds upstream TLS config
+  with TLS 1.2 minimum, optional CA pool from `tls_ca_file`, explicit or
+  address-derived server name, and relies on config validation to keep
+  `tls_skip_verify` development-only.
 
 ## Verification
 
@@ -208,6 +214,12 @@ read-only query forwarding, result masking, and structured audit logging.
   resolution.
 - `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
   adding upstream password secret resolution.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after adding the
+  upstream connector boundary and TLS config mapping.
+- `go test ./...` passed on 2026-06-17 after adding the upstream connector
+  boundary.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  adding the upstream connector boundary.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
