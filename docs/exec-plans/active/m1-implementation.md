@@ -134,6 +134,12 @@ read-only query forwarding, result masking, and structured audit logging.
   applies schema/query policy immediately, records any pre-auth allowed
   database selection, and replays it to the upstream session only after
   post-auth activation.
+- Adapt `otp.Verifier` to go-mysql's `server.AuthenticationHandler` with one
+  handler instance per client connection. The handler normalizes the remote
+  address to a source host before exposing verifier material, returns
+  `caching_sha2_password` credentials to the library, consumes OTP credentials
+  only in the auth-success hook, records failures in the auth-failure hook, and
+  supports cache invalidation after consume.
 
 ## Verification
 
@@ -232,6 +238,12 @@ read-only query forwarding, result masking, and structured audit logging.
   activation boundary.
 - `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
   adding the deferred session handler activation boundary.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after adding the
+  OTP-backed authentication handler adapter.
+- `go test ./...` passed on 2026-06-17 after adding the OTP-backed
+  authentication handler adapter.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  adding the OTP-backed authentication handler adapter.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
