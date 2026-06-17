@@ -17,6 +17,8 @@ type deferredForwardingHandler struct {
 
 	pendingDatabase string
 	forwarding      *forwardingHandler
+	closed          bool
+	terminal        error
 }
 
 func newDeferredSessionHandler(config sqlpolicy.Config) *deferredSessionHandler {
@@ -30,6 +32,14 @@ func newDeferredSessionHandler(config sqlpolicy.Config) *deferredSessionHandler 
 
 func (handler *deferredSessionHandler) Activate(upstream upstreamSession) error {
 	return handler.forwarding.Activate(upstream)
+}
+
+func (handler *deferredSessionHandler) Close() error {
+	return handler.forwarding.Close()
+}
+
+func (handler *deferredSessionHandler) TerminalError() error {
+	return handler.forwarding.TerminalError()
 }
 
 func (handler *deferredSessionHandler) UseDB(database string) error {
@@ -61,10 +71,16 @@ func (handler *deferredSessionHandler) HandleOtherCommand(command byte, data []b
 }
 
 func (handler *deferredForwardingHandler) Activate(upstream upstreamSession) error {
+	if handler.closed {
+		_ = upstream.Close()
+
+		return unsupportedError()
+	}
+
 	forwarding := newForwardingHandler(upstream)
 	if handler.pendingDatabase != "" {
 		if err := forwarding.UseDB(handler.pendingDatabase); err != nil {
-			_ = upstream.Close()
+			_ = forwarding.Close()
 
 			return err
 		}
@@ -74,14 +90,32 @@ func (handler *deferredForwardingHandler) Activate(upstream upstreamSession) err
 	return nil
 }
 
+func (handler *deferredForwardingHandler) Close() error {
+	if handler.forwarding == nil {
+		return nil
+	}
+	forwarding := handler.forwarding
+	handler.deactivate(nil)
+
+	return forwarding.Close()
+}
+
 func (handler *deferredForwardingHandler) UseDB(database string) error {
 	if handler.forwarding == nil {
+		if handler.closed {
+			return unsupportedError()
+		}
 		handler.pendingDatabase = database
 
 		return nil
 	}
 
-	return handler.forwarding.UseDB(database)
+	err := handler.forwarding.UseDB(database)
+	if handler.forwarding.isClosed() {
+		handler.deactivate(handler.forwarding.terminalError())
+	}
+
+	return err
 }
 
 func (handler *deferredForwardingHandler) HandleQuery(query string) (*mysql.Result, error) {
@@ -89,7 +123,25 @@ func (handler *deferredForwardingHandler) HandleQuery(query string) (*mysql.Resu
 		return nil, unsupportedError()
 	}
 
-	return handler.forwarding.HandleQuery(query)
+	forwarding := handler.forwarding
+	result, err := forwarding.HandleQuery(query)
+	if forwarding.isClosed() {
+		handler.deactivate(forwarding.terminalError())
+	}
+
+	return result, err
+}
+
+func (handler *deferredForwardingHandler) TerminalError() error {
+	return handler.terminal
+}
+
+func (handler *deferredForwardingHandler) deactivate(err error) {
+	handler.forwarding = nil
+	handler.closed = true
+	if handler.terminal == nil {
+		handler.terminal = err
+	}
 }
 
 var (

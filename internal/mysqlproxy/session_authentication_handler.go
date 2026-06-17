@@ -30,6 +30,7 @@ type clientSessionConfig struct {
 type clientSession struct {
 	AuthHandler server.AuthenticationHandler
 	Handler     server.Handler
+	deferred    *deferredSessionHandler
 }
 
 func newClientSession(config clientSessionConfig) clientSession {
@@ -47,7 +48,24 @@ func newClientSession(config clientSessionConfig) clientSession {
 	return clientSession{
 		AuthHandler: authHandler,
 		Handler:     sessionHandler,
+		deferred:    sessionHandler,
 	}
+}
+
+func (session clientSession) Close() error {
+	if session.deferred == nil {
+		return nil
+	}
+
+	return session.deferred.Close()
+}
+
+func (session clientSession) TerminalError() error {
+	if session.deferred == nil {
+		return nil
+	}
+
+	return session.deferred.TerminalError()
 }
 
 func newSessionAuthenticationHandler(
@@ -85,7 +103,7 @@ func (handler *sessionAuthenticationHandler) recordAuthSuccess(username string, 
 		return err
 	}
 	if err := handler.credentials.recordAuthSuccess(username, localAddr); err != nil {
-		_ = upstream.Close()
+		_ = handler.session.Close()
 
 		return err
 	}

@@ -1,6 +1,8 @@
 package mysqlproxy
 
 import (
+	"errors"
+
 	"github.com/dakatsuka/masqman/internal/sqlpolicy"
 
 	"github.com/go-mysql-org/go-mysql/client"
@@ -18,6 +20,8 @@ type forwardingHandler struct {
 	unsupportedHandler
 
 	upstream upstreamSession
+	closed   bool
+	terminal error
 }
 
 func newForwardingHandler(upstream upstreamSession) *forwardingHandler {
@@ -29,21 +33,73 @@ func newSessionHandler(config sqlpolicy.Config, upstream upstreamSession) server
 }
 
 func (handler *forwardingHandler) UseDB(database string) error {
-	return handler.upstream.UseDB(database)
+	if handler.closed {
+		return unsupportedError()
+	}
+
+	err := handler.upstream.UseDB(database)
+	if isTerminalUpstreamError(err) {
+		_ = handler.closeTerminal(err)
+	}
+
+	return err
 }
 
 func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, error) {
-	result, err := handler.upstream.Execute(query)
-	if err != nil {
-		return nil, err
-	}
-	if result != nil && result.Status&mysql.SERVER_MORE_RESULTS_EXISTS != 0 {
-		_ = handler.upstream.Close()
-
+	if handler.closed {
 		return nil, unsupportedError()
 	}
 
+	result, err := handler.upstream.Execute(query)
+	if err != nil {
+		if isTerminalUpstreamError(err) {
+			_ = handler.closeTerminal(err)
+		}
+
+		return nil, err
+	}
+	if result != nil && result.Status&mysql.SERVER_MORE_RESULTS_EXISTS != 0 {
+		err := unsupportedError()
+		_ = handler.closeTerminal(err)
+
+		return nil, err
+	}
+
 	return result, nil
+}
+
+func (handler *forwardingHandler) Close() error {
+	if handler.closed {
+		return nil
+	}
+	handler.closed = true
+
+	return handler.upstream.Close()
+}
+
+func (handler *forwardingHandler) isClosed() bool {
+	return handler.closed
+}
+
+func (handler *forwardingHandler) terminalError() error {
+	return handler.terminal
+}
+
+func (handler *forwardingHandler) closeTerminal(err error) error {
+	if handler.terminal == nil {
+		handler.terminal = err
+	}
+
+	return handler.Close()
+}
+
+func isTerminalUpstreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var mysqlErr *mysql.MyError
+
+	return !errors.As(err, &mysqlErr)
 }
 
 var (

@@ -39,11 +39,11 @@ func TestForwardingHandlerDelegatesInitDBToUpstream(t *testing.T) {
 	}
 }
 
-func TestForwardingHandlerPropagatesUpstreamErrors(t *testing.T) {
+func TestForwardingHandlerKeepsUpstreamOpenForMySQLError(t *testing.T) {
 	t.Parallel()
 
-	queryErr := errors.New("upstream query failed")
-	initDBErr := errors.New("upstream init db failed")
+	queryErr := mysql.NewError(mysql.ER_NO_SUCH_TABLE, "table missing")
+	initDBErr := mysql.NewError(mysql.ER_BAD_DB_ERROR, "unknown database")
 	upstream := &recordingUpstream{
 		queryErr:  queryErr,
 		initDBErr: initDBErr,
@@ -58,6 +58,28 @@ func TestForwardingHandlerPropagatesUpstreamErrors(t *testing.T) {
 	err = handler.UseDB("app")
 	if !errors.Is(err, initDBErr) {
 		t.Fatalf("UseDB() error = %v, want %v", err, initDBErr)
+	}
+	if upstream.closeCalls != 0 {
+		t.Fatalf("upstream Close calls = %d, want 0", upstream.closeCalls)
+	}
+}
+
+func TestForwardingHandlerClosesUpstreamOnNonMySQLError(t *testing.T) {
+	t.Parallel()
+
+	queryErr := errors.New("upstream packet read failed")
+	upstream := &recordingUpstream{queryErr: queryErr}
+	handler := newForwardingHandler(upstream)
+
+	_, err := handler.HandleQuery("select id from employees")
+	if !errors.Is(err, queryErr) {
+		t.Fatalf("HandleQuery() error = %v, want %v", err, queryErr)
+	}
+	if upstream.closeCalls != 1 {
+		t.Fatalf("upstream Close calls = %d, want 1", upstream.closeCalls)
+	}
+	if !errors.Is(handler.terminalError(), queryErr) {
+		t.Fatalf("terminalError() = %v, want %v", handler.terminalError(), queryErr)
 	}
 }
 
@@ -107,9 +129,14 @@ type recordingUpstream struct {
 	queryErr  error
 	closed    bool
 	closeErr  error
+
+	useDBCalls   int
+	executeCalls int
+	closeCalls   int
 }
 
 func (upstream *recordingUpstream) UseDB(database string) error {
+	upstream.useDBCalls++
 	upstream.database = database
 	upstream.recordEvent("use_db:" + database)
 
@@ -117,6 +144,7 @@ func (upstream *recordingUpstream) UseDB(database string) error {
 }
 
 func (upstream *recordingUpstream) Execute(query string, _ ...any) (*mysql.Result, error) {
+	upstream.executeCalls++
 	upstream.query = query
 	upstream.recordEvent("execute:" + query)
 
@@ -124,6 +152,7 @@ func (upstream *recordingUpstream) Execute(query string, _ ...any) (*mysql.Resul
 }
 
 func (upstream *recordingUpstream) Close() error {
+	upstream.closeCalls++
 	upstream.closed = true
 	upstream.recordEvent("close")
 

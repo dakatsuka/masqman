@@ -114,8 +114,13 @@ read-only query forwarding, result masking, and structured audit logging.
   audit events, connection ownership, and Docker protocol tests remain pending.
 - The forwarding boundary rejects upstream results that carry
   `SERVER_MORE_RESULTS_EXISTS`, closes the upstream session, and returns a
-  generic unsupported-protocol MySQL error so later queries cannot reuse a
-  desynchronized connection.
+  generic unsupported-protocol MySQL error. Because go-mysql can keep the
+  command loop alive after handler errors are converted into error packets, the
+  deferred session marks this as a terminal client-session error after this
+  point so later commands cannot reuse a desynchronized upstream connection.
+  Non-MySQL upstream errors are terminal for the same reason; normal upstream
+  `*mysql.MyError` responses remain client-visible query errors and do not
+  close the forwarding session.
 - `Config.UpstreamPassword` is the M1 boundary for resolving the dedicated
   upstream database account password. Environment variable references take
   precedence over file references, file references take precedence over inline
@@ -144,7 +149,21 @@ read-only query forwarding, result masking, and structured audit logging.
   session handler, and upstream connector. On auth success, Masqman connects and
   activates the upstream session before consuming the OTP; upstream connection or
   activation failures reject the client without consuming the credential, and
-  consume failures close the just-opened upstream session.
+  consume failures close the just-opened upstream session through the same
+  deferred-session close path used by protocol setup cleanup.
+- Add a per-connection MySQL protocol handler boundary that builds fresh
+  session state from the accepted `net.Conn`, passes the composed
+  authentication and command handlers to go-mysql, gives the auth handler the
+  accepted connection's remote address for source-rate-limit checks, and closes
+  the client connection when go-mysql connection setup fails. The same boundary
+  owns the go-mysql command loop after a successful handshake because
+  `NewCustomizedConn` only authenticates and initializes the protocol
+  connection. Command-loop exit and post-auth setup failures close the activated
+  upstream session so M1's 1:1 upstream mapping does not leak connections.
+  Terminal session errors reported by the command handler also close the client
+  connection after go-mysql has emitted the error packet. Normal client-side
+  protocol close, such as `COM_QUIT`, closes the upstream session and ends the
+  loop without treating the close as an error.
 
 ## Verification
 
@@ -255,6 +274,20 @@ read-only query forwarding, result masking, and structured audit logging.
   activation with deferred session state.
 - `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
   composing auth-success upstream activation with deferred session state.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after adding the
+  per-connection MySQL protocol handler boundary.
+- `go test ./...` passed on 2026-06-17 after adding the per-connection MySQL
+  protocol handler boundary.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  adding the per-connection MySQL protocol handler boundary.
+- `go test ./internal/mysqlproxy` passed on 2026-06-17 after fixing review
+  findings for terminal handler errors, non-MySQL upstream error cleanup, and
+  OTP consume-failure cleanup.
+- `go test ./...` passed on 2026-06-17 after fixing terminal handler errors,
+  non-MySQL upstream error cleanup, and OTP consume-failure cleanup.
+- `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
+  fixing terminal handler errors, non-MySQL upstream error cleanup, and OTP
+  consume-failure cleanup paths.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
