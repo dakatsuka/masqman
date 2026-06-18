@@ -246,6 +246,33 @@ func TestSessionHandlerAllowsResultsetsAtMaxRowsBoundary(t *testing.T) {
 	}
 }
 
+func TestSessionHandlerAllowsZeroRowBufferedResultsetWithStaleStreamingState(t *testing.T) {
+	t.Parallel()
+
+	resultset := mysql.NewResultset(1)
+	resultset.Fields[0] = &mysql.Field{Name: []byte("id"), Type: mysql.MYSQL_TYPE_LONG}
+	resultset.Streaming = mysql.StreamingSelect
+	resultset.StreamingDone = true
+	upstream := &recordingUpstream{result: mysql.NewResult(resultset)}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultRows: 1},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select id from employees where 1 = 0")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+	if result.Streaming != mysql.StreamingNone || result.StreamingDone {
+		t.Fatalf("result streaming state = (%v, %v), want normalized buffered result", result.Streaming, result.StreamingDone)
+	}
+	if upstream.closed {
+		t.Fatal("upstream was closed for zero-row buffered resultset")
+	}
+}
+
 func TestSessionHandlerRejectsStreamingResultsetsWhenRowLimitIsEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -272,31 +299,6 @@ func TestSessionHandlerRejectsStreamingResultsetsWhenRowLimitIsEnabled(t *testin
 	}
 	if !stream.IsClosed() {
 		t.Fatal("stream result was not closed after row limit rejection")
-	}
-}
-
-func TestSessionHandlerRejectsResultsetStreamingModeWhenRowLimitIsEnabled(t *testing.T) {
-	t.Parallel()
-
-	resultset := mysql.NewResultset(1)
-	resultset.Fields[0] = &mysql.Field{Name: []byte("id"), Type: mysql.MYSQL_TYPE_LONG}
-	resultset.Streaming = mysql.StreamingSelect
-	resultset.StreamingDone = true
-	upstream := &recordingUpstream{result: mysql.NewResult(resultset)}
-	handler := newSessionHandlerWithLimits(
-		testPolicyConfig(),
-		nil,
-		resourceLimits{maxResultRows: 1},
-		upstream,
-	)
-
-	result, err := handler.HandleQuery("select id from employees")
-	if result != nil {
-		t.Fatalf("HandleQuery() result = %#v, want nil", result)
-	}
-	assertUnsupported(t, err)
-	if !upstream.closed {
-		t.Fatal("upstream was not closed after Resultset streaming mode with row limit")
 	}
 }
 

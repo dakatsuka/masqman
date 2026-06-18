@@ -110,6 +110,7 @@ func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, erro
 
 		return nil, err
 	}
+	normalizeBufferedResultset(result)
 	if result != nil && result.Status&mysql.SERVER_MORE_RESULTS_EXISTS != 0 {
 		err := unsupportedError()
 		_ = handler.closeTerminal(err)
@@ -321,6 +322,18 @@ func resultIsStreaming(result *mysql.Result) bool {
 	return result != nil &&
 		(result.IsStreaming() ||
 			(result.Resultset != nil && result.Streaming != mysql.StreamingNone))
+}
+
+func normalizeBufferedResultset(result *mysql.Result) {
+	if result == nil || result.Resultset == nil {
+		return
+	}
+	if len(result.Fields) == 0 && len(result.RowDatas) == 0 && len(result.Values) == 0 {
+		return
+	}
+
+	result.Streaming = mysql.StreamingNone
+	result.StreamingDone = false
 }
 
 func resultRowCount(result *mysql.Result) int {
