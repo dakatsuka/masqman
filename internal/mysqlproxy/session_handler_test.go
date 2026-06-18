@@ -3,6 +3,8 @@ package mysqlproxy
 import (
 	"testing"
 
+	"github.com/dakatsuka/masqman/internal/masking"
+
 	"github.com/go-mysql-org/go-mysql/mysql"
 )
 
@@ -47,5 +49,107 @@ func TestSessionHandlerAppliesSchemaPolicyBeforeInitDB(t *testing.T) {
 	assertMySQLErrorCode(t, err, mysql.ER_SPECIFIC_ACCESS_DENIED_ERROR)
 	if upstream.database != "app" {
 		t.Fatalf("upstream database after rejection = %q, want unchanged app", upstream.database)
+	}
+}
+
+func TestSessionHandlerPassesSafeExpressionResultsThroughMasking(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("count(*)"), Type: mysql.MYSQL_TYPE_LONGLONG}},
+			[][]*string{{stringPtr("42")}},
+		),
+	}
+	handler := newSessionHandlerWithMasking(testPolicyConfig(), masking.NewPolicy(masking.Config{}), upstream)
+
+	result, err := handler.HandleQuery("select count(*) from employees")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+
+	values, err := result.RowDatas[0].Parse(result.Fields, false, nil)
+	if err != nil {
+		t.Fatalf("parse masked row: %v", err)
+	}
+	if got := fieldValueText(t, values[0]); got != "42" {
+		t.Fatalf("masked COUNT(*) = %q, want 42", got)
+	}
+}
+
+func TestSessionHandlerPassesOriginFreeOperationalLiteralThroughMasking(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("1"), Type: mysql.MYSQL_TYPE_LONG}},
+			[][]*string{{stringPtr("1")}},
+		),
+	}
+	handler := newSessionHandlerWithMasking(testPolicyConfig(), masking.NewPolicy(masking.Config{}), upstream)
+
+	result, err := handler.HandleQuery("select 1")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+
+	values, err := result.RowDatas[0].Parse(result.Fields, false, nil)
+	if err != nil {
+		t.Fatalf("parse masked row: %v", err)
+	}
+	if got := fieldValueText(t, values[0]); got != "1" {
+		t.Fatalf("masked origin-free SELECT 1 = %q, want 1", got)
+	}
+}
+
+func TestSessionHandlerRejectsSetupStatementsThatReturnResultsets(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("leaked"), Type: mysql.MYSQL_TYPE_VAR_STRING}},
+			[][]*string{{stringPtr("secret")}},
+		),
+	}
+	handler := newSessionHandlerWithMasking(testPolicyConfig(), masking.NewPolicy(masking.Config{}), upstream)
+
+	result, err := handler.HandleQuery("set names utf8mb4")
+	if result != nil {
+		t.Fatalf("HandleQuery() result = %#v, want nil", result)
+	}
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after setup statement returned a resultset")
+	}
+}
+
+func TestSessionHandlerMasksOperationalReadWithPhysicalOriginMetadata(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{
+				Schema:   []byte("app"),
+				Name:     []byte("1"),
+				OrgTable: []byte("employees"),
+				OrgName:  []byte("salary"),
+				Type:     mysql.MYSQL_TYPE_LONG,
+			}},
+			[][]*string{{stringPtr("90000")}},
+		),
+	}
+	handler := newSessionHandlerWithMasking(testPolicyConfig(), masking.NewPolicy(masking.Config{}), upstream)
+
+	result, err := handler.HandleQuery("select 1")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+
+	values, err := result.RowDatas[0].Parse(result.Fields, false, nil)
+	if err != nil {
+		t.Fatalf("parse masked row: %v", err)
+	}
+	if got := fieldValueText(t, values[0]); got != "0" {
+		t.Fatalf("operational read with physical origin = %q, want numeric mask", got)
 	}
 }

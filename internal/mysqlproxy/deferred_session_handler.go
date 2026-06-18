@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"github.com/dakatsuka/masqman/internal/masking"
 	"github.com/dakatsuka/masqman/internal/sqlpolicy"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -16,13 +17,23 @@ type deferredForwardingHandler struct {
 	unsupportedHandler
 
 	pendingDatabase string
+	masker          masking.Policy
+	decision        sqlpolicy.Decision
 	forwarding      *forwardingHandler
 	closed          bool
 	terminal        error
 }
 
 func newDeferredSessionHandler(config sqlpolicy.Config) *deferredSessionHandler {
+	return newDeferredSessionHandlerWithMasking(config, nil)
+}
+
+func newDeferredSessionHandlerWithMasking(
+	config sqlpolicy.Config,
+	masker masking.Policy,
+) *deferredSessionHandler {
 	forwarding := &deferredForwardingHandler{}
+	forwarding.masker = masker
 
 	return &deferredSessionHandler{
 		policy:     newPolicyHandler(config, forwarding),
@@ -77,7 +88,8 @@ func (handler *deferredForwardingHandler) Activate(upstream upstreamSession) err
 		return unsupportedError()
 	}
 
-	forwarding := newForwardingHandler(upstream)
+	forwarding := newForwardingHandlerWithMasking(upstream, handler.masker)
+	forwarding.setQueryDecision(handler.decision)
 	if handler.pendingDatabase != "" {
 		if err := forwarding.UseDB(handler.pendingDatabase); err != nil {
 			_ = forwarding.Close()
@@ -134,6 +146,13 @@ func (handler *deferredForwardingHandler) HandleQuery(query string) (*mysql.Resu
 
 func (handler *deferredForwardingHandler) TerminalError() error {
 	return handler.terminal
+}
+
+func (handler *deferredForwardingHandler) setQueryDecision(decision sqlpolicy.Decision) {
+	handler.decision = decision
+	if handler.forwarding != nil {
+		handler.forwarding.setQueryDecision(decision)
+	}
 }
 
 func (handler *deferredForwardingHandler) deactivate(err error) {

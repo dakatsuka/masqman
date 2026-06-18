@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 
 	appconfig "github.com/dakatsuka/masqman/internal/config"
+	"github.com/dakatsuka/masqman/internal/masking"
 	"github.com/dakatsuka/masqman/internal/otp"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -38,7 +39,10 @@ type clientSession struct {
 }
 
 func newClientSession(config clientSessionConfig) clientSession {
-	sessionHandler := newDeferredSessionHandler(config.Config.SQLPolicyConfig())
+	sessionHandler := newDeferredSessionHandlerWithMasking(
+		config.Config.SQLPolicyConfig(),
+		masking.NewPolicy(config.Config.Masking),
+	)
 	connector := config.UpstreamConnector
 	if connector == nil {
 		connector = newUpstreamConnector(config.Config)

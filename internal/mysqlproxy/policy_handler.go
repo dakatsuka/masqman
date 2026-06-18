@@ -15,6 +15,10 @@ type policyHandler struct {
 	next           server.Handler
 }
 
+type queryDecisionHandler interface {
+	setQueryDecision(sqlpolicy.Decision)
+}
+
 func newPolicyHandler(config sqlpolicy.Config, next server.Handler) *policyHandler {
 	if next == nil {
 		next = &unsupportedHandler{}
@@ -36,8 +40,12 @@ func (handler *policyHandler) UseDB(database string) error {
 }
 
 func (handler *policyHandler) HandleQuery(query string) (*mysql.Result, error) {
-	if !handler.isAllowed(query) {
+	decision := handler.classifier.Classify(query)
+	if !isAllowedDecision(decision) {
 		return nil, policyError()
+	}
+	if next, ok := handler.next.(queryDecisionHandler); ok {
+		next.setQueryDecision(decision)
 	}
 
 	return handler.next.HandleQuery(query)
@@ -63,9 +71,7 @@ func (handler *policyHandler) HandleOtherCommand(_ byte, _ []byte) error {
 	return unsupportedError()
 }
 
-func (handler *policyHandler) isAllowed(statement string) bool {
-	decision := handler.classifier.Classify(statement)
-
+func isAllowedDecision(decision sqlpolicy.Decision) bool {
 	return decision.Kind == sqlpolicy.AllowRead ||
 		decision.Kind == sqlpolicy.AllowOperationalRead ||
 		decision.Kind == sqlpolicy.AllowSetup

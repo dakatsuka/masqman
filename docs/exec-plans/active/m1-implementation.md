@@ -173,6 +173,21 @@ read-only query forwarding, result masking, and structured audit logging.
   MySQL listener TLS is enabled, Masqman rejects non-TLS client authentication
   before opening the upstream session or consuming the OTP because go-mysql
   advertises TLS support but does not by itself make TLS mandatory.
+- Add the first text-protocol result masking boundary in `internal/mysqlproxy`.
+  Forwarded resultsets are rewritten before returning to go-mysql's server
+  response writer: physical-origin metadata maps to `masking.Policy`, aliases
+  are ignored for allow decisions, `NULL` is preserved, and both `RowDatas` and
+  `Values` are rebuilt so unit tests and real text-protocol responses observe
+  the same masked data. Parser-derived expression facts are carried from the
+  policy handler into forwarding so built-in safe expressions such as
+  `COUNT(*)` can pass without physical origin metadata. Expression facts permit
+  passthrough only when returned field metadata is origin-free; physical-origin
+  metadata still goes through masking rules. Streaming resultsets remain
+  unsupported because M1 masking is text-resultset rewriting. `AllowSetup`
+  decisions must not return resultsets; a resultset on that path is treated as a
+  terminal unsupported-protocol violation. Binary string fields reported as
+  `STRING` or `VAR_STRING` with binary metadata are masked as empty bytes, not
+  as text placeholders.
 
 ## Verification
 
@@ -303,6 +318,27 @@ read-only query forwarding, result masking, and structured audit logging.
   boundary.
 - `go tool golangci-lint run ./...` passed on 2026-06-17 with 0 issues after
   adding the MySQL listener server boundary.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after adding text-protocol result masking at the forwarding
+  boundary.
+- `GOCACHE=/tmp/masqman-go-build go test ./...` passed on 2026-06-18 after
+  wiring configured masking policy into MySQL client sessions.
+- `GOCACHE=/tmp/masqman-go-build go tool golangci-lint run ./...` passed on
+  2026-06-18 with 0 issues after text-protocol result masking.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after review fixes for streaming-result rejection, setup-resultset
+  rejection, and origin-free operational-read passthrough checks.
+- `GOCACHE=/tmp/masqman-go-build go test ./...` passed on 2026-06-18 after
+  result masking review fixes.
+- `GOCACHE=/tmp/masqman-go-build go tool golangci-lint run ./...` passed on
+  2026-06-18 with 0 issues after result masking review fixes.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after re-review fixes for binary string masking and direct
+  origin-free operational literal coverage.
+- `GOCACHE=/tmp/masqman-go-build go test ./...` passed on 2026-06-18 after
+  re-review fixes for result masking.
+- `GOCACHE=/tmp/masqman-go-build go tool golangci-lint run ./...` passed on
+  2026-06-18 with 0 issues after result masking re-review fixes.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
