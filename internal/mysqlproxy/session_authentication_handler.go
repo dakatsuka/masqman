@@ -39,9 +39,10 @@ type clientSession struct {
 }
 
 func newClientSession(config clientSessionConfig) clientSession {
-	sessionHandler := newDeferredSessionHandlerWithMasking(
+	sessionHandler := newDeferredSessionHandlerWithLimits(
 		config.Config.SQLPolicyConfig(),
 		masking.NewPolicy(config.Config.Masking),
+		resourceLimits{maxQueryBytes: config.Config.RateLimits.MaxQueryBytes},
 	)
 	connector := config.UpstreamConnector
 	if connector == nil {

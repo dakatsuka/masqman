@@ -32,11 +32,19 @@ func newDeferredSessionHandlerWithMasking(
 	config sqlpolicy.Config,
 	masker masking.Policy,
 ) *deferredSessionHandler {
+	return newDeferredSessionHandlerWithLimits(config, masker, resourceLimits{})
+}
+
+func newDeferredSessionHandlerWithLimits(
+	config sqlpolicy.Config,
+	masker masking.Policy,
+	limits resourceLimits,
+) *deferredSessionHandler {
 	forwarding := &deferredForwardingHandler{}
 	forwarding.masker = masker
 
 	return &deferredSessionHandler{
-		policy:     newPolicyHandler(config, forwarding),
+		policy:     newPolicyHandlerWithLimits(config, limits, forwarding),
 		forwarding: forwarding,
 	}
 }

@@ -188,6 +188,14 @@ read-only query forwarding, result masking, and structured audit logging.
   terminal unsupported-protocol violation. Binary string fields reported as
   `STRING` or `VAR_STRING` with binary metadata are masked as empty bytes, not
   as text placeholders.
+- Add the first MySQL resource-limit boundary for query text size. The
+  per-session command handler rejects `COM_QUERY` strings whose byte length
+  exceeds `Config.RateLimits.MaxQueryBytes` before SQL classification or
+  upstream forwarding, returning `ER_NET_PACKET_TOO_LARGE`. This limit is
+  configured from the validated application config when composing each client
+  session. The built-in `SELECT @@max_allowed_packet` operational probe is
+  synthesized from the proxy limit instead of forwarded upstream so clients see
+  the effective command-size ceiling enforced by Masqman.
 
 ## Verification
 
@@ -339,6 +347,13 @@ read-only query forwarding, result masking, and structured audit logging.
   re-review fixes for result masking.
 - `GOCACHE=/tmp/masqman-go-build go tool golangci-lint run ./...` passed on
   2026-06-18 with 0 issues after result masking re-review fixes.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after enforcing `MaxQueryBytes` before SQL classification and
+  upstream forwarding.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after review fixes for exact query-size boundary coverage,
+  oversized unsafe-query precedence, and synthesized `@@max_allowed_packet`
+  responses from `MaxQueryBytes`.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.

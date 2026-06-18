@@ -181,6 +181,35 @@ func TestNewClientSessionComposesAuthAndDeferredHandler(t *testing.T) {
 	}
 }
 
+func TestNewClientSessionEnforcesConfiguredMaxQueryBytes(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{}
+	connector := &recordingUpstreamConnector{upstream: upstream}
+	cfg := config.Default()
+	cfg.Setup.AllowSchemaSelection = []string{"app"}
+	cfg.RateLimits.MaxQueryBytes = len("select 1")
+	clientSession := newClientSession(clientSessionConfig{
+		Config:            cfg,
+		Verifier:          &recordingVerifier{},
+		RemoteAddr:        "10.0.0.1:60000",
+		UpstreamConnector: connector,
+	})
+	authHandler, ok := clientSession.AuthHandler.(*sessionAuthenticationHandler)
+	if !ok {
+		t.Fatalf("AuthHandler = %T, want *sessionAuthenticationHandler", clientSession.AuthHandler)
+	}
+	if err := authHandler.recordAuthSuccess("alice-otp", "127.0.0.1:3307"); err != nil {
+		t.Fatalf("recordAuthSuccess() error = %v, want nil", err)
+	}
+
+	_, err := clientSession.Handler.HandleQuery("select 12")
+	assertMySQLErrorCode(t, err, mysql.ER_NET_PACKET_TOO_LARGE)
+	if upstream.executeCalls != 0 {
+		t.Fatalf("upstream Execute calls = %d, want 0", upstream.executeCalls)
+	}
+}
+
 type recordingUpstreamConnector struct {
 	upstream  upstreamSession
 	err       error

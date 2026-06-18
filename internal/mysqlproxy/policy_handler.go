@@ -1,6 +1,8 @@
 package mysqlproxy
 
 import (
+	"strconv"
+
 	"github.com/dakatsuka/masqman/internal/sqlpolicy"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -12,7 +14,12 @@ const queryPolicyPrivilege = "Masqman query policy"
 type policyHandler struct {
 	classifier     sqlpolicy.Classifier
 	allowedSchemas map[string]struct{}
+	limits         resourceLimits
 	next           server.Handler
+}
+
+type resourceLimits struct {
+	maxQueryBytes int
 }
 
 type queryDecisionHandler interface {
@@ -20,6 +27,14 @@ type queryDecisionHandler interface {
 }
 
 func newPolicyHandler(config sqlpolicy.Config, next server.Handler) *policyHandler {
+	return newPolicyHandlerWithLimits(config, resourceLimits{}, next)
+}
+
+func newPolicyHandlerWithLimits(
+	config sqlpolicy.Config,
+	limits resourceLimits,
+	next server.Handler,
+) *policyHandler {
 	if next == nil {
 		next = &unsupportedHandler{}
 	}
@@ -27,6 +42,7 @@ func newPolicyHandler(config sqlpolicy.Config, next server.Handler) *policyHandl
 	return &policyHandler{
 		classifier:     sqlpolicy.NewClassifier(config),
 		allowedSchemas: allowedSchemaSet(config.AllowedSchemas),
+		limits:         limits,
 		next:           next,
 	}
 }
@@ -40,9 +56,16 @@ func (handler *policyHandler) UseDB(database string) error {
 }
 
 func (handler *policyHandler) HandleQuery(query string) (*mysql.Result, error) {
+	if handler.limits.maxQueryBytes > 0 && len(query) > handler.limits.maxQueryBytes {
+		return nil, queryTooLargeError()
+	}
+
 	decision := handler.classifier.Classify(query)
 	if !isAllowedDecision(decision) {
 		return nil, policyError()
+	}
+	if handler.shouldSynthesizeMaxAllowedPacket(decision) {
+		return maxAllowedPacketResult(handler.limits.maxQueryBytes), nil
 	}
 	if next, ok := handler.next.(queryDecisionHandler); ok {
 		next.setQueryDecision(decision)
@@ -79,6 +102,34 @@ func isAllowedDecision(decision sqlpolicy.Decision) bool {
 
 func policyError() *mysql.MyError {
 	return mysql.NewDefaultError(mysql.ER_SPECIFIC_ACCESS_DENIED_ERROR, queryPolicyPrivilege)
+}
+
+func queryTooLargeError() *mysql.MyError {
+	return mysql.NewDefaultError(mysql.ER_NET_PACKET_TOO_LARGE)
+}
+
+func (handler *policyHandler) shouldSynthesizeMaxAllowedPacket(decision sqlpolicy.Decision) bool {
+	return handler.limits.maxQueryBytes > 0 &&
+		decision.Kind == sqlpolicy.AllowOperationalRead &&
+		len(decision.ExpressionContext) == 1 &&
+		decision.ExpressionContext[0].FunctionName == "@@max_allowed_packet"
+}
+
+func maxAllowedPacketResult(limit int) *mysql.Result {
+	field := &mysql.Field{
+		Name: []byte("@@max_allowed_packet"),
+		Type: mysql.MYSQL_TYPE_LONGLONG,
+	}
+	resultset := mysql.NewResultset(1)
+	resultset.Fields[0] = field
+	rowData := mysql.RowData(mysql.PutLengthEncodedString([]byte(strconv.Itoa(limit))))
+	resultset.RowDatas = append(resultset.RowDatas, rowData)
+	values, err := rowData.Parse(resultset.Fields, false, nil)
+	if err == nil {
+		resultset.Values = append(resultset.Values, values)
+	}
+
+	return mysql.NewResult(resultset)
 }
 
 func allowedSchemaSet(schemas []string) map[string]struct{} {

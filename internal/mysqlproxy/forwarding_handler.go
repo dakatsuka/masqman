@@ -48,7 +48,16 @@ func newSessionHandlerWithMasking(
 	masker masking.Policy,
 	upstream upstreamSession,
 ) server.Handler {
-	return newPolicyHandler(config, newForwardingHandlerWithMasking(upstream, masker))
+	return newSessionHandlerWithLimits(config, masker, resourceLimits{}, upstream)
+}
+
+func newSessionHandlerWithLimits(
+	config sqlpolicy.Config,
+	masker masking.Policy,
+	limits resourceLimits,
+	upstream upstreamSession,
+) server.Handler {
+	return newPolicyHandlerWithLimits(config, limits, newForwardingHandlerWithMasking(upstream, masker))
 }
 
 func (handler *forwardingHandler) UseDB(database string) error {

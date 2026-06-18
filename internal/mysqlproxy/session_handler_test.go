@@ -102,6 +102,95 @@ func TestSessionHandlerPassesOriginFreeOperationalLiteralThroughMasking(t *testi
 	}
 }
 
+func TestSessionHandlerRejectsOversizedQueryBeforeForwarding(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxQueryBytes: len("select 1")},
+		upstream,
+	)
+
+	_, err := handler.HandleQuery("select 12")
+	assertMySQLErrorCode(t, err, mysql.ER_NET_PACKET_TOO_LARGE)
+	if upstream.executeCalls != 0 {
+		t.Fatalf("upstream Execute calls = %d, want 0", upstream.executeCalls)
+	}
+}
+
+func TestSessionHandlerAllowsQueryAtMaxQueryBytesBoundary(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{result: &mysql.Result{}}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxQueryBytes: len("select 1")},
+		upstream,
+	)
+
+	_, err := handler.HandleQuery("select 1")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+	if upstream.executeCalls != 1 {
+		t.Fatalf("upstream Execute calls = %d, want 1", upstream.executeCalls)
+	}
+}
+
+func TestSessionHandlerRejectsOversizedUnsafeQueryBeforePolicy(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxQueryBytes: len("drop table")},
+		upstream,
+	)
+
+	_, err := handler.HandleQuery("drop table employees")
+	assertMySQLErrorCode(t, err, mysql.ER_NET_PACKET_TOO_LARGE)
+	if upstream.executeCalls != 0 {
+		t.Fatalf("upstream Execute calls = %d, want 0", upstream.executeCalls)
+	}
+}
+
+func TestSessionHandlerSynthesizesMaxAllowedPacketFromQueryLimit(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("@@max_allowed_packet"), Type: mysql.MYSQL_TYPE_LONGLONG}},
+			[][]*string{{stringPtr("67108864")}},
+		),
+	}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxQueryBytes: 1024},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select @@max_allowed_packet")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+	if upstream.executeCalls != 0 {
+		t.Fatalf("upstream Execute calls = %d, want 0", upstream.executeCalls)
+	}
+
+	values, err := result.RowDatas[0].Parse(result.Fields, false, nil)
+	if err != nil {
+		t.Fatalf("parse synthesized row: %v", err)
+	}
+	if got := fieldValueText(t, values[0]); got != "1024" {
+		t.Fatalf("@@max_allowed_packet = %q, want 1024", got)
+	}
+}
+
 func TestSessionHandlerRejectsSetupStatementsThatReturnResultsets(t *testing.T) {
 	t.Parallel()
 
