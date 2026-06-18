@@ -18,6 +18,7 @@ type deferredForwardingHandler struct {
 
 	pendingDatabase string
 	masker          masking.Policy
+	limits          resourceLimits
 	decision        sqlpolicy.Decision
 	forwarding      *forwardingHandler
 	closed          bool
@@ -42,6 +43,7 @@ func newDeferredSessionHandlerWithLimits(
 ) *deferredSessionHandler {
 	forwarding := &deferredForwardingHandler{}
 	forwarding.masker = masker
+	forwarding.limits = limits
 
 	return &deferredSessionHandler{
 		policy:     newPolicyHandlerWithLimits(config, limits, forwarding),
@@ -96,7 +98,7 @@ func (handler *deferredForwardingHandler) Activate(upstream upstreamSession) err
 		return unsupportedError()
 	}
 
-	forwarding := newForwardingHandlerWithMasking(upstream, handler.masker)
+	forwarding := newForwardingHandlerWithLimits(upstream, handler.masker, handler.limits)
 	forwarding.setQueryDecision(handler.decision)
 	if handler.pendingDatabase != "" {
 		if err := forwarding.UseDB(handler.pendingDatabase); err != nil {

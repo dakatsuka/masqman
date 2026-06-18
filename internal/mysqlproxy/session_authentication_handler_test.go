@@ -210,6 +210,40 @@ func TestNewClientSessionEnforcesConfiguredMaxQueryBytes(t *testing.T) {
 	}
 }
 
+func TestNewClientSessionEnforcesConfiguredMaxResultRows(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("id"), Type: mysql.MYSQL_TYPE_LONG}},
+			[][]*string{{stringPtr("1")}, {stringPtr("2")}},
+		),
+	}
+	connector := &recordingUpstreamConnector{upstream: upstream}
+	cfg := config.Default()
+	cfg.Setup.AllowSchemaSelection = []string{"app"}
+	cfg.RateLimits.MaxResultRows = 1
+	clientSession := newClientSession(clientSessionConfig{
+		Config:            cfg,
+		Verifier:          &recordingVerifier{},
+		RemoteAddr:        "10.0.0.1:60000",
+		UpstreamConnector: connector,
+	})
+	authHandler, ok := clientSession.AuthHandler.(*sessionAuthenticationHandler)
+	if !ok {
+		t.Fatalf("AuthHandler = %T, want *sessionAuthenticationHandler", clientSession.AuthHandler)
+	}
+	if err := authHandler.recordAuthSuccess("alice-otp", "127.0.0.1:3307"); err != nil {
+		t.Fatalf("recordAuthSuccess() error = %v, want nil", err)
+	}
+
+	_, err := clientSession.Handler.HandleQuery("select id from employees")
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after configured result row limit breach")
+	}
+}
+
 type recordingUpstreamConnector struct {
 	upstream  upstreamSession
 	err       error

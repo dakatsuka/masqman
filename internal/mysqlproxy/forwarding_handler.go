@@ -18,11 +18,21 @@ type upstreamSession interface {
 	Close() error
 }
 
+type streamingUpstreamSession interface {
+	ExecuteSelectStreaming(
+		command string,
+		result *mysql.Result,
+		perRowCallback client.SelectPerRowCallback,
+		perResultCallback client.SelectPerResultCallback,
+	) error
+}
+
 type forwardingHandler struct {
 	unsupportedHandler
 
 	upstream upstreamSession
 	masker   masking.Policy
+	limits   resourceLimits
 	decision sqlpolicy.Decision
 	closed   bool
 	terminal error
@@ -33,9 +43,18 @@ func newForwardingHandler(upstream upstreamSession) *forwardingHandler {
 }
 
 func newForwardingHandlerWithMasking(upstream upstreamSession, masker masking.Policy) *forwardingHandler {
+	return newForwardingHandlerWithLimits(upstream, masker, resourceLimits{})
+}
+
+func newForwardingHandlerWithLimits(
+	upstream upstreamSession,
+	masker masking.Policy,
+	limits resourceLimits,
+) *forwardingHandler {
 	return &forwardingHandler{
 		upstream: upstream,
 		masker:   masker,
+		limits:   limits,
 	}
 }
 
@@ -57,7 +76,7 @@ func newSessionHandlerWithLimits(
 	limits resourceLimits,
 	upstream upstreamSession,
 ) server.Handler {
-	return newPolicyHandlerWithLimits(config, limits, newForwardingHandlerWithMasking(upstream, masker))
+	return newPolicyHandlerWithLimits(config, limits, newForwardingHandlerWithLimits(upstream, masker, limits))
 }
 
 func (handler *forwardingHandler) UseDB(database string) error {
@@ -78,8 +97,13 @@ func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, erro
 		return nil, unsupportedError()
 	}
 
-	result, err := handler.upstream.Execute(query)
+	result, err := handler.execute(query)
 	if err != nil {
+		if errors.Is(err, errResultRowLimitExceeded) {
+			_ = handler.closeTerminal(err)
+
+			return nil, unsupportedError()
+		}
 		if isTerminalUpstreamError(err) {
 			_ = handler.closeTerminal(err)
 		}
@@ -98,6 +122,19 @@ func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, erro
 
 		return nil, err
 	}
+	if handler.limits.maxResultRows > 0 && resultIsStreaming(result) {
+		err := unsupportedError()
+		result.Close()
+		_ = handler.closeTerminal(err)
+
+		return nil, err
+	}
+	if handler.resultRowsOverLimit(result) {
+		err := unsupportedError()
+		_ = handler.closeTerminal(err)
+
+		return nil, err
+	}
 	if err := handler.maskResult(result); err != nil {
 		_ = handler.closeTerminal(err)
 
@@ -105,6 +142,56 @@ func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, erro
 	}
 
 	return result, nil
+}
+
+func (handler *forwardingHandler) execute(query string) (*mysql.Result, error) {
+	if handler.limits.maxResultRows > 0 {
+		if upstream, ok := handler.upstream.(streamingUpstreamSession); ok {
+			return handler.executeBoundedSelect(query, upstream)
+		}
+	}
+
+	return handler.upstream.Execute(query)
+}
+
+func (handler *forwardingHandler) executeBoundedSelect(
+	query string,
+	upstream streamingUpstreamSession,
+) (*mysql.Result, error) {
+	result := &mysql.Result{}
+	var rows [][]mysql.FieldValue
+	err := upstream.ExecuteSelectStreaming(
+		query,
+		result,
+		func(row []mysql.FieldValue) error {
+			if len(rows) >= handler.limits.maxResultRows {
+				return errResultRowLimitExceeded
+			}
+			rows = append(rows, cloneFieldValues(row))
+
+			return nil
+		},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if result.Resultset != nil && len(result.Fields) > 0 {
+		rowDatas, err := rowDatasFromValues(rows)
+		if err != nil {
+			return nil, err
+		}
+		result.RowDatas = rowDatas
+		result.Values = rows
+		result.Streaming = mysql.StreamingNone
+		result.StreamingDone = false
+	}
+
+	return result, nil
+}
+
+func (handler *forwardingHandler) resultRowsOverLimit(result *mysql.Result) bool {
+	return handler.limits.maxResultRows > 0 && resultRowCount(result) > handler.limits.maxResultRows
 }
 
 func (handler *forwardingHandler) Close() error {
@@ -140,7 +227,7 @@ func (handler *forwardingHandler) maskResult(result *mysql.Result) error {
 	if handler.masker == nil || result == nil {
 		return nil
 	}
-	if result.IsStreaming() {
+	if resultIsStreaming(result) {
 		return errors.New("streaming resultsets cannot be masked")
 	}
 	if result.Resultset == nil || len(result.Fields) == 0 {
@@ -227,7 +314,24 @@ func (handler *forwardingHandler) expressionAllowsPassthrough(index int, field *
 }
 
 func resultHasResultset(result *mysql.Result) bool {
-	return result != nil && (result.IsStreaming() || result.HasResultset())
+	return result != nil && (resultIsStreaming(result) || result.HasResultset())
+}
+
+func resultIsStreaming(result *mysql.Result) bool {
+	return result != nil &&
+		(result.IsStreaming() ||
+			(result.Resultset != nil && result.Streaming != mysql.StreamingNone))
+}
+
+func resultRowCount(result *mysql.Result) int {
+	if result == nil || result.Resultset == nil {
+		return 0
+	}
+	if len(result.RowDatas) > 0 {
+		return len(result.RowDatas)
+	}
+
+	return len(result.Values)
 }
 
 func originFreeField(field *mysql.Field) bool {
@@ -271,6 +375,19 @@ func rowDatasFromValues(values [][]mysql.FieldValue) ([]mysql.RowData, error) {
 	}
 
 	return rowDatas, nil
+}
+
+func cloneFieldValues(values []mysql.FieldValue) []mysql.FieldValue {
+	cloned := make([]mysql.FieldValue, len(values))
+	for i, value := range values {
+		var raw []byte
+		if value.Type == mysql.FieldValueTypeString {
+			raw = append([]byte(nil), value.AsString()...)
+		}
+		cloned[i] = mysql.NewFieldValue(value.Type, value.AsUint64(), raw)
+	}
+
+	return cloned
 }
 
 func maskingField(field *mysql.Field) masking.Field {
@@ -337,3 +454,5 @@ var (
 	_ server.Handler  = (*forwardingHandler)(nil)
 	_ upstreamSession = (*client.Conn)(nil)
 )
+
+var errResultRowLimitExceeded = errors.New("result row limit exceeded")

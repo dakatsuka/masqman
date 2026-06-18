@@ -5,6 +5,7 @@ import (
 
 	"github.com/dakatsuka/masqman/internal/masking"
 
+	"github.com/go-mysql-org/go-mysql/client"
 	"github.com/go-mysql-org/go-mysql/mysql"
 )
 
@@ -191,6 +192,192 @@ func TestSessionHandlerSynthesizesMaxAllowedPacketFromQueryLimit(t *testing.T) {
 	}
 }
 
+func TestSessionHandlerRejectsResultsetsOverMaxRows(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("id"), Type: mysql.MYSQL_TYPE_LONG}},
+			[][]*string{{stringPtr("1")}, {stringPtr("2")}},
+		),
+	}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultRows: 1},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select id from employees")
+	if result != nil {
+		t.Fatalf("HandleQuery() result = %#v, want nil", result)
+	}
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after result row limit breach")
+	}
+}
+
+func TestSessionHandlerAllowsResultsetsAtMaxRowsBoundary(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("id"), Type: mysql.MYSQL_TYPE_LONG}},
+			[][]*string{{stringPtr("1")}},
+		),
+	}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultRows: 1},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select id from employees")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+	if result != upstream.result {
+		t.Fatal("HandleQuery() did not return upstream result")
+	}
+	if upstream.closed {
+		t.Fatal("upstream was closed at result row limit boundary")
+	}
+}
+
+func TestSessionHandlerRejectsStreamingResultsetsWhenRowLimitIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	stream := mysql.NewStreamResult(
+		[]*mysql.Field{{Name: []byte("id"), Type: mysql.MYSQL_TYPE_LONG}},
+		1,
+		false,
+	)
+	upstream := &recordingUpstream{result: stream.AsResult()}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultRows: 1},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select id from employees")
+	if result != nil {
+		t.Fatalf("HandleQuery() result = %#v, want nil", result)
+	}
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after streaming result with row limit")
+	}
+	if !stream.IsClosed() {
+		t.Fatal("stream result was not closed after row limit rejection")
+	}
+}
+
+func TestSessionHandlerRejectsResultsetStreamingModeWhenRowLimitIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	resultset := mysql.NewResultset(1)
+	resultset.Fields[0] = &mysql.Field{Name: []byte("id"), Type: mysql.MYSQL_TYPE_LONG}
+	resultset.Streaming = mysql.StreamingSelect
+	resultset.StreamingDone = true
+	upstream := &recordingUpstream{result: mysql.NewResult(resultset)}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultRows: 1},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select id from employees")
+	if result != nil {
+		t.Fatalf("HandleQuery() result = %#v, want nil", result)
+	}
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after Resultset streaming mode with row limit")
+	}
+}
+
+func TestSessionHandlerUsesBoundedStreamingReadForResultRowLimit(t *testing.T) {
+	t.Parallel()
+
+	upstream := &streamingRecordingUpstream{
+		fields: []*mysql.Field{{Name: []byte("id"), Type: mysql.MYSQL_TYPE_LONG}},
+		rows:   [][]*string{{stringPtr("1")}, {stringPtr("2")}, {stringPtr("3")}},
+	}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultRows: 1},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select id from employees")
+	if result != nil {
+		t.Fatalf("HandleQuery() result = %#v, want nil", result)
+	}
+	assertUnsupported(t, err)
+	if upstream.executeCalls != 0 {
+		t.Fatalf("buffered Execute calls = %d, want 0", upstream.executeCalls)
+	}
+	if upstream.streamingCalls != 1 {
+		t.Fatalf("ExecuteSelectStreaming calls = %d, want 1", upstream.streamingCalls)
+	}
+	if upstream.callbackRows != 2 {
+		t.Fatalf("streamed callback rows = %d, want limit plus one", upstream.callbackRows)
+	}
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after bounded streaming row limit breach")
+	}
+}
+
+func TestSessionHandlerMasksBoundedStreamingResultAtRowLimitBoundary(t *testing.T) {
+	t.Parallel()
+
+	upstream := &streamingRecordingUpstream{
+		fields: []*mysql.Field{{
+			Schema:   []byte("app"),
+			Name:     []byte("email"),
+			OrgTable: []byte("employees"),
+			OrgName:  []byte("email"),
+			Type:     mysql.MYSQL_TYPE_VAR_STRING,
+		}},
+		rows: [][]*string{{stringPtr("alice@example.test")}},
+	}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		masking.NewPolicy(masking.Config{}),
+		resourceLimits{maxResultRows: 1},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select email from employees")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+	if upstream.executeCalls != 0 {
+		t.Fatalf("buffered Execute calls = %d, want 0", upstream.executeCalls)
+	}
+	if upstream.streamingCalls != 1 {
+		t.Fatalf("ExecuteSelectStreaming calls = %d, want 1", upstream.streamingCalls)
+	}
+	if result.Streaming != mysql.StreamingNone || result.StreamingDone {
+		t.Fatalf("result streaming state = (%v, %v), want buffered result", result.Streaming, result.StreamingDone)
+	}
+	values, err := result.RowDatas[0].Parse(result.Fields, false, nil)
+	if err != nil {
+		t.Fatalf("parse masked row data: %v", err)
+	}
+	if got := fieldValueText(t, values[0]); got != "***MASKED***" {
+		t.Fatalf("RowDatas masked value = %q, want mask placeholder", got)
+	}
+	if got := fieldValueText(t, result.Values[0][0]); got != "***MASKED***" {
+		t.Fatalf("Values masked value = %q, want mask placeholder", got)
+	}
+}
+
 func TestSessionHandlerRejectsSetupStatementsThatReturnResultsets(t *testing.T) {
 	t.Parallel()
 
@@ -210,6 +397,43 @@ func TestSessionHandlerRejectsSetupStatementsThatReturnResultsets(t *testing.T) 
 	if !upstream.closed {
 		t.Fatal("upstream was not closed after setup statement returned a resultset")
 	}
+}
+
+type streamingRecordingUpstream struct {
+	recordingUpstream
+
+	fields         []*mysql.Field
+	rows           [][]*string
+	streamingCalls int
+	callbackRows   int
+}
+
+func (upstream *streamingRecordingUpstream) ExecuteSelectStreaming(
+	command string,
+	result *mysql.Result,
+	perRowCallback client.SelectPerRowCallback,
+	perResultCallback client.SelectPerResultCallback,
+) error {
+	upstream.streamingCalls++
+	upstream.query = command
+
+	buffered := resultWithTextRows(upstream.fields, upstream.rows)
+	result.Resultset = buffered.Resultset
+	result.Streaming = mysql.StreamingSelect
+	if perResultCallback != nil {
+		if err := perResultCallback(result); err != nil {
+			return err
+		}
+	}
+	for _, row := range buffered.Values {
+		upstream.callbackRows++
+		if err := perRowCallback(row); err != nil {
+			return err
+		}
+	}
+	result.StreamingDone = true
+
+	return nil
 }
 
 func TestSessionHandlerMasksOperationalReadWithPhysicalOriginMetadata(t *testing.T) {

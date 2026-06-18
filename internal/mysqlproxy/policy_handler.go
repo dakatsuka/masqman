@@ -20,6 +20,7 @@ type policyHandler struct {
 
 type resourceLimits struct {
 	maxQueryBytes int
+	maxResultRows int
 }
 
 type queryDecisionHandler interface {

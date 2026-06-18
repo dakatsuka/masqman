@@ -196,6 +196,16 @@ read-only query forwarding, result masking, and structured audit logging.
   session. The built-in `SELECT @@max_allowed_packet` operational probe is
   synthesized from the proxy limit instead of forwarded upstream so clients see
   the effective command-size ceiling enforced by Masqman.
+- Add a buffered result row-count resource-limit boundary. Forwarded resultsets
+  whose row count exceeds `Config.RateLimits.MaxResultRows` are rejected before
+  masking or response writing, the upstream session is closed, and the client
+  session is marked terminal so a limit breach cannot continue on a potentially
+  unsafe result path. For real go-mysql upstream connections, row-limited
+  queries use `ExecuteSelectStreaming` and stop at `limit + 1` instead of first
+  buffering the full upstream resultset. Streaming resultsets returned by other
+  upstream adapters are rejected when row limits are active because M1 cannot
+  count them before returning data; this includes both `Result.StreamResult` and
+  `Resultset.Streaming` modes.
 
 ## Verification
 
@@ -354,6 +364,18 @@ read-only query forwarding, result masking, and structured audit logging.
   2026-06-18 after review fixes for exact query-size boundary coverage,
   oversized unsafe-query precedence, and synthesized `@@max_allowed_packet`
   responses from `MaxQueryBytes`.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after enforcing `MaxResultRows` before masking and response
+  writing, including boundary, config-wiring, and streaming rejection coverage.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after review fixes that route row-limited upstream reads through
+  bounded `ExecuteSelectStreaming` and stop at `limit + 1`.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after re-review fixes for `Resultset.Streaming` rejection and
+  masked bounded-streaming positive-path coverage.
+- `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
+  2026-06-18 after re-review fixes to avoid `MaxResultRows`-sized
+  preallocation and to close rejected streaming results.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.

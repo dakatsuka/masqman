@@ -42,7 +42,10 @@ func newClientSession(config clientSessionConfig) clientSession {
 	sessionHandler := newDeferredSessionHandlerWithLimits(
 		config.Config.SQLPolicyConfig(),
 		masking.NewPolicy(config.Config.Masking),
-		resourceLimits{maxQueryBytes: config.Config.RateLimits.MaxQueryBytes},
+		resourceLimits{
+			maxQueryBytes: config.Config.RateLimits.MaxQueryBytes,
+			maxResultRows: config.Config.RateLimits.MaxResultRows,
+		},
 	)
 	connector := config.UpstreamConnector
 	if connector == nil {
