@@ -52,7 +52,7 @@ read-only query forwarding, result masking, and structured audit logging.
       rate limits, SQL classification, masking precedence, audit normalization,
       and HTTP auth sessions.
 - [x] Green: implement config, OTP, local auth, audit logger, and policy modules.
-- [ ] Red: write Docker Compose protocol tests for auth, allowed setup
+- [x] Red: write Docker Compose protocol tests for auth, allowed setup
       statements, rejected unsupported commands, forwarded SELECT, masking, and
       metadata query rejection.
 - [x] Red: while parser integration remains incomplete, add SQL policy boundary
@@ -220,6 +220,13 @@ read-only query forwarding, result masking, and structured audit logging.
   before dispatching a client handler, releases it when the handler returns, and
   closes newly accepted TCP connections without protocol startup when all slots
   are occupied.
+- Add Docker protocol integration tests gated by
+  `MASQMAN_RUN_DOCKER_PROTOCOL_TESTS=1`. The tests use Docker Compose MySQL
+  Server as the upstream, a containerized `mysql` client for auth/setup/select
+  and metadata rejection paths, and a go-mysql client only for explicit
+  `COM_STMT_PREPARE` rejection coverage that the stock CLI cannot trigger
+  directly. The compose `mysql-client` service defines `host.docker.internal`
+  for host proxy access from the container.
 
 ## Verification
 
@@ -400,6 +407,9 @@ read-only query forwarding, result masking, and structured audit logging.
   `MaxMySQLSessions` in the MySQL listener accept loop.
 - `go test ./...` passed on 2026-06-20 after result byte and MySQL session
   concurrency limit work.
+- `go test ./internal/mysqlproxy` passed on 2026-06-20 after adding gated
+  Docker protocol integration tests; Docker execution was not run because
+  `MASQMAN_RUN_DOCKER_PROTOCOL_TESTS` was unset.
 
 ## Completion Notes
 
