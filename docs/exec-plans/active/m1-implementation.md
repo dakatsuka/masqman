@@ -236,6 +236,21 @@ read-only query forwarding, result masking, and structured audit logging.
   authenticated user/source identity, generic error class, and a count of result
   values changed by masking. Query audit failure closes the upstream/session and
   returns a generic MySQL-compatible error.
+- Add the first process startup boundary in `cmd/masqman`. After config load and
+  validation, the command opens the configured file audit sink, initializes the
+  in-memory OTP store, builds the MySQL proxy server with the audit logger, and
+  blocks in `Serve` on a configured listener. Startup errors return exit code 1
+  after reporting a generic startup failure. `SIGINT` and `SIGTERM` cancel the
+  process context, close the MySQL listener so `Serve` can return, and allow the
+  audit logger close path to flush and report close errors instead of relying on
+  abrupt process termination.
+- Add context-aware MySQL server shutdown. `ServeContext` tracks accepted client
+  connections, closes the listener and active client connections on context
+  cancellation while holding the active-connection lock, rejects just-accepted
+  connections when cancellation has already happened, waits for handlers to
+  return, and preserves the existing `Serve` API as a background-context
+  wrapper. The CLI startup path now uses `ServeContext` so signal cancellation
+  can unblock idle or active MySQL client sessions before audit cleanup runs.
 
 ## Verification
 
@@ -427,6 +442,28 @@ read-only query forwarding, result masking, and structured audit logging.
 - `go test ./...` passed on 2026-06-20 after MySQL proxy audit wiring.
 - `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
   MySQL proxy audit wiring.
+- `go test ./cmd/masqman` passed on 2026-06-20 after wiring CLI startup to the
+  audit logger, OTP store, and MySQL proxy server.
+- `go test ./...` passed on 2026-06-20 after CLI startup wiring.
+- `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
+  CLI startup wiring.
+- `go test ./cmd/masqman` passed on 2026-06-20 after adding context/signal
+  cancellation for startup shutdown and audit cleanup coverage.
+- `go test ./...` passed on 2026-06-20 after context/signal shutdown wiring.
+- `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
+  context/signal shutdown wiring.
+- `go test ./internal/mysqlproxy -run
+  TestServerContextCancellationClosesActiveConnections` passed on 2026-06-20
+  after adding context-aware active MySQL connection shutdown.
+- `go test ./internal/mysqlproxy -run TestServerContextCancellation` passed on
+  2026-06-20 after closing active connections under lock and rejecting
+  just-accepted connections after cancellation.
+- `go test ./cmd/masqman ./internal/mysqlproxy` passed on 2026-06-20 after
+  wiring CLI shutdown through `ServeContext`.
+- `go test ./...` passed on 2026-06-20 after context-aware MySQL server
+  shutdown.
+- `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
+  context-aware MySQL server shutdown.
 
 ## Completion Notes
 

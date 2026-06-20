@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -91,6 +92,80 @@ func TestServerRejectsConnectionsOverMaxMySQLSessions(t *testing.T) {
 	}
 	if protocolServer.newConnCalls != 1 {
 		t.Fatalf("protocol NewConn calls = %d, want 1", protocolServer.newConnCalls)
+	}
+}
+
+func TestServerContextCancellationClosesActiveConnections(t *testing.T) {
+	t.Parallel()
+
+	commandStarted := make(chan struct{})
+	commandUnblocked := make(chan struct{})
+	protocolServer := &recordingProtocolServer{
+		protocolConn: &recordingProtocolConn{
+			onCommands: []func() error{
+				func() error {
+					close(commandStarted)
+					<-commandUnblocked
+
+					return errCommandLoopDone
+				},
+			},
+		},
+	}
+	mysqlServer := newServer(serverConfig{
+		Config:            configWithAllowedAppSchema(),
+		Verifier:          &recordingVerifier{},
+		ProtocolServer:    protocolServer,
+		UpstreamConnector: &recordingUpstreamConnector{upstream: &recordingUpstream{}},
+	})
+	listener := newRecordingListener()
+	conn := newSignalingConn("10.0.0.1:60000")
+	ctx, cancel := context.WithCancel(context.Background())
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- mysqlServer.ServeContext(ctx, listener)
+	}()
+
+	listener.accepts <- acceptResult{conn: conn}
+	<-commandStarted
+	cancel()
+	<-conn.closed
+	close(commandUnblocked)
+	listener.accepts <- acceptResult{err: net.ErrClosed}
+
+	if err := <-serveErr; err != nil {
+		t.Fatalf("ServeContext() error = %v, want nil", err)
+	}
+}
+
+func TestServerContextCancellationClosesAcceptedConnectionBeforeTracking(t *testing.T) {
+	t.Parallel()
+
+	protocolServer := &recordingProtocolServer{}
+	mysqlServer := newServer(serverConfig{
+		Config:            configWithAllowedAppSchema(),
+		Verifier:          &recordingVerifier{},
+		ProtocolServer:    protocolServer,
+		UpstreamConnector: &recordingUpstreamConnector{upstream: &recordingUpstream{}},
+	})
+	listener := newRecordingListener()
+	ctx, cancel := context.WithCancel(context.Background())
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- mysqlServer.ServeContext(ctx, listener)
+	}()
+
+	cancel()
+	conn := newSignalingConn("10.0.0.1:60000")
+	listener.accepts <- acceptResult{conn: conn}
+	<-conn.closed
+	listener.accepts <- acceptResult{err: net.ErrClosed}
+
+	if err := <-serveErr; err != nil {
+		t.Fatalf("ServeContext() error = %v, want nil", err)
+	}
+	if protocolServer.newConnCalls != 0 {
+		t.Fatalf("protocol NewConn calls = %d, want 0", protocolServer.newConnCalls)
 	}
 }
 

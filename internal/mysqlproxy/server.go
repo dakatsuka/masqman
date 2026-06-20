@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -129,9 +130,32 @@ func (server *Server) ListenAndServe() error {
 // or Accept returns a non-close error. In-flight connection handlers are allowed
 // to finish before Serve returns.
 func (server *Server) Serve(listener net.Listener) error {
+	return server.ServeContext(context.Background(), listener)
+}
+
+// ServeContext accepts client connections from listener until the listener is
+// closed, Accept returns a non-close error, or context cancellation closes the
+// listener and active client connections.
+func (server *Server) ServeContext(ctx context.Context, listener net.Listener) error {
 	var wg sync.WaitGroup
-	defer wg.Wait()
 	sessionSlots := make(chan struct{}, server.config.RateLimits.MaxMySQLSessions)
+	active := make(map[net.Conn]struct{})
+	var activeMu sync.Mutex
+	done := make(chan struct{})
+	defer close(done)
+	defer wg.Wait()
+	go func() {
+		select {
+		case <-ctx.Done():
+			activeMu.Lock()
+			_ = listener.Close()
+			for conn := range active {
+				_ = conn.Close()
+			}
+			activeMu.Unlock()
+		case <-done:
+		}
+	}()
 
 	handler := newClientConnectionHandler(clientConnectionHandlerConfig{
 		Config:            server.config,
@@ -158,13 +182,26 @@ func (server *Server) Serve(listener net.Listener) error {
 			continue
 		}
 
+		activeMu.Lock()
+		if ctx.Err() != nil {
+			activeMu.Unlock()
+			<-sessionSlots
+			_ = conn.Close()
+
+			continue
+		}
+		active[conn] = struct{}{}
+		activeMu.Unlock()
 		wg.Add(1)
-		go func() {
+		go func(conn net.Conn) {
 			defer func() {
+				activeMu.Lock()
+				delete(active, conn)
+				activeMu.Unlock()
 				<-sessionSlots
 				wg.Done()
 			}()
 			_ = handler.ServeConn(conn)
-		}()
+		}(conn)
 	}
 }
