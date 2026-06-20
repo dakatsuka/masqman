@@ -265,6 +265,16 @@ read-only query forwarding, result masking, and structured audit logging.
   `-p` separate from the password, while the password is displayed separately.
   Session cookies are `HttpOnly`, `SameSite=Lax`, and use the handler's
   production `Secure` setting.
+- Wire the browser authentication listener into `cmd/masqman` startup. The CLI
+  now builds a local auth provider, browser session store, shared OTP store, and
+  `authhttp` handler, listens on the configured HTTP address, and serves HTTP
+  and MySQL listeners under one derived process context. If either listener
+  exits unexpectedly, the other is canceled; parent context cancellation remains
+  a clean shutdown. The credential page command now includes the configured
+  MySQL listener port when one is available, so the default development
+  `127.0.0.1:3307` listener renders a usable `mysql -h ... -P ... -u ... -p`
+  command. Wildcard MySQL bind hosts defer the rendered host to the HTTP request
+  host so remote browser clients do not receive a loopback-only command.
 
 ## Verification
 
@@ -438,6 +448,14 @@ read-only query forwarding, result masking, and structured audit logging.
   routes.
 - `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
   adding browser authentication routes.
+- `go test ./cmd/masqman ./internal/authhttp` passed on 2026-06-20 after wiring
+  the HTTP authentication listener into CLI startup.
+- `go test ./...` passed on 2026-06-20 after wiring the HTTP authentication
+  listener.
+- `go test -race ./cmd/masqman ./internal/authhttp` passed on 2026-06-20 after
+  wiring concurrent HTTP and MySQL listener startup.
+- `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
+  wiring the HTTP authentication listener.
 - `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
   2026-06-18 after re-review fixes to avoid `MaxResultRows`-sized
   preallocation and to close rejected streaming results.

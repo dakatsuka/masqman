@@ -3,16 +3,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/dakatsuka/masqman/internal/app"
 	"github.com/dakatsuka/masqman/internal/audit"
+	"github.com/dakatsuka/masqman/internal/auth"
+	"github.com/dakatsuka/masqman/internal/authhttp"
 	"github.com/dakatsuka/masqman/internal/config"
 	"github.com/dakatsuka/masqman/internal/mysqlproxy"
 	"github.com/dakatsuka/masqman/internal/otp"
@@ -89,19 +94,144 @@ func startMasqman(ctx context.Context, cfg config.Config) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	httpHandler, err := newAuthHTTPHandler(cfg, otpStore)
+	if err != nil {
+		return err
+	}
+	httpServer := &http.Server{
+		Handler:           httpHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       cfg.Sessions.BrowserIdleTimeout,
+	}
 
-	listener, err := new(net.ListenConfig).Listen(ctx, "tcp", cfg.MySQL.ListenAddr)
+	httpListener, err := new(net.ListenConfig).Listen(ctx, "tcp", cfg.HTTP.ListenAddr)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = listener.Close()
+		_ = httpListener.Close()
 	}()
 
-	err = mysqlServer.ServeContext(ctx, listener)
+	mysqlListener, err := new(net.ListenConfig).Listen(ctx, "tcp", cfg.MySQL.ListenAddr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = mysqlListener.Close()
+	}()
+
+	err = serveMasqman(ctx, cfg, httpServer, httpListener, mysqlServer, mysqlListener)
 	if ctx.Err() != nil {
 		return nil
 	}
 
 	return err
+}
+
+type mysqlServeContext interface {
+	ServeContext(context.Context, net.Listener) error
+}
+
+func newAuthHTTPHandler(cfg config.Config, issuer otp.Issuer) (http.Handler, error) {
+	mysqlHost, mysqlPort := mysqlCommandEndpoint(cfg.MySQL.ListenAddr)
+	sessions := authhttp.NewSessionStore(authhttp.SessionConfig{
+		IdleLifetime:     cfg.Sessions.BrowserIdleTimeout,
+		AbsoluteLifetime: cfg.Sessions.BrowserAbsoluteLimit,
+	})
+
+	return authhttp.NewHandler(authhttp.HandlerConfig{
+		AuthProvider: auth.NewLocalProvider(cfg.Auth.LocalUsers),
+		Sessions:     sessions,
+		Issuer:       issuer,
+		CookieSecure: cfg.Environment == config.EnvironmentProduction || cfg.HTTP.TLS.Enabled,
+		MySQLHost:    mysqlHost,
+		MySQLPort:    mysqlPort,
+	})
+}
+
+func serveMasqman(
+	ctx context.Context,
+	cfg config.Config,
+	httpServer *http.Server,
+	httpListener net.Listener,
+	mysqlServer mysqlServeContext,
+	mysqlListener net.Listener,
+) error {
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errs := make(chan error, 2)
+	go func() {
+		errs <- serveHTTPContext(
+			serveCtx,
+			httpServer,
+			httpListener,
+			cfg.HTTP.TLS,
+			cfg.Sessions.ShutdownDrainDeadline,
+		)
+	}()
+	go func() {
+		errs <- mysqlServer.ServeContext(serveCtx, mysqlListener)
+	}()
+
+	firstErr := <-errs
+	cancel()
+	secondErr := <-errs
+	if ctx.Err() != nil {
+		return nil
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+
+	return secondErr
+}
+
+func serveHTTPContext(
+	ctx context.Context,
+	server *http.Server,
+	listener net.Listener,
+	tlsConfig config.TLS,
+	shutdownDeadline time.Duration,
+) error {
+	errs := make(chan error, 1)
+	go func() {
+		var err error
+		if tlsConfig.Enabled {
+			err = server.ServeTLS(listener, tlsConfig.CertFile, tlsConfig.KeyFile)
+		} else {
+			err = server.Serve(listener)
+		}
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		errs <- err
+	}()
+
+	select {
+	case err := <-errs:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownDeadline)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+
+			return err
+		}
+
+		return <-errs
+	}
+}
+
+func mysqlCommandEndpoint(listenAddr string) (string, string) {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return listenAddr, ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = ""
+	}
+
+	return host, port
 }

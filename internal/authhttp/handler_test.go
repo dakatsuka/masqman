@@ -195,6 +195,81 @@ func TestCredentialIssuanceRequiresCSRFAndRendersPasswordSeparately(t *testing.T
 	}
 }
 
+func TestCredentialCommandIncludesConfiguredMySQLPort(t *testing.T) {
+	t.Parallel()
+
+	sessions := authhttp.NewSessionStore(authhttp.SessionConfig{TokenBytes: 16})
+	issuer := &recordingIssuer{credential: otp.Credential{
+		Username:  "ot_alice",
+		Password:  "separate-password",
+		ExpiresAt: time.Date(2026, 6, 20, 12, 30, 0, 0, time.UTC),
+	}}
+	handler := newTestHandler(t, authhttp.HandlerConfig{
+		AuthProvider: &recordingProvider{user: auth.User{ID: "alice"}},
+		Sessions:     sessions,
+		Issuer:       issuer,
+		MySQLHost:    "127.0.0.1",
+		MySQLPort:    "3307",
+	})
+	session, err := sessions.Create(auth.User{ID: "alice"})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	form := url.Values{"csrf_token": {session.CSRFToken}}
+	req := newRequest(http.MethodPost, "/credentials", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionRequestCookie(session.ID))
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST /credentials status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if !strings.Contains(resp.Body.String(), "mysql -h 127.0.0.1 -P 3307 -u ot_alice -p") {
+		t.Fatalf("credential page did not render configured port: %s", resp.Body.String())
+	}
+}
+
+func TestCredentialCommandUsesRequestHostWithoutHTTPPort(t *testing.T) {
+	t.Parallel()
+
+	sessions := authhttp.NewSessionStore(authhttp.SessionConfig{TokenBytes: 16})
+	issuer := &recordingIssuer{credential: otp.Credential{
+		Username:  "ot_alice",
+		Password:  "separate-password",
+		ExpiresAt: time.Date(2026, 6, 20, 12, 30, 0, 0, time.UTC),
+	}}
+	handler := newTestHandler(t, authhttp.HandlerConfig{
+		AuthProvider: &recordingProvider{user: auth.User{ID: "alice"}},
+		Sessions:     sessions,
+		Issuer:       issuer,
+		MySQLPort:    "3307",
+	})
+	session, err := sessions.Create(auth.User{ID: "alice"})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	form := url.Values{"csrf_token": {session.CSRFToken}}
+	req := newRequest(http.MethodPost, "/credentials", strings.NewReader(form.Encode()))
+	req.Host = "masqman.example.test:8080"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionRequestCookie(session.ID))
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST /credentials status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if !strings.Contains(resp.Body.String(), "mysql -h masqman.example.test -P 3307 -u ot_alice -p") {
+		t.Fatalf("credential page did not render request host with MySQL port: %s", resp.Body.String())
+	}
+	if strings.Contains(resp.Body.String(), "masqman.example.test:8080") {
+		t.Fatalf("credential page rendered HTTP port as MySQL host: %s", resp.Body.String())
+	}
+}
+
 func TestInvalidCredentialCSRFDoesNotRefreshSession(t *testing.T) {
 	t.Parallel()
 

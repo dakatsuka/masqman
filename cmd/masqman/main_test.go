@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,8 +112,10 @@ func TestStartMasqmanStopsOnContextCancellation(t *testing.T) {
 	t.Parallel()
 
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	httpAddr := freeLocalAddr(t)
 	mysqlAddr := freeLocalAddr(t)
 	cfg := config.Default()
+	cfg.HTTP.ListenAddr = httpAddr
 	cfg.MySQL.ListenAddr = mysqlAddr
 	cfg.Audit.FilePath = auditPath
 
@@ -120,6 +124,7 @@ func TestStartMasqmanStopsOnContextCancellation(t *testing.T) {
 	go func() {
 		done <- startMasqman(ctx, cfg)
 	}()
+	waitForHTTP(t, "http://"+httpAddr+"/login")
 	waitForTCP(t, mysqlAddr)
 	cancel()
 
@@ -135,6 +140,42 @@ func TestStartMasqmanStopsOnContextCancellation(t *testing.T) {
 		t.Fatalf("audit file missing after shutdown: %v", err)
 	} else if info.Mode().Perm() != 0o600 {
 		t.Fatalf("audit file permissions = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestStartMasqmanRejectsOccupiedHTTPListener(t *testing.T) {
+	t.Parallel()
+
+	listener, err := new(net.ListenConfig).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer func() {
+		_ = listener.Close()
+	}()
+
+	cfg := config.Default()
+	cfg.HTTP.ListenAddr = listener.Addr().String()
+	cfg.MySQL.ListenAddr = freeLocalAddr(t)
+	cfg.Audit.FilePath = filepath.Join(t.TempDir(), "audit.jsonl")
+
+	err = startMasqman(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("startMasqman() error = nil, want HTTP listener error")
+	}
+}
+
+func TestMySQLCommandEndpointPreservesPublicHostForWildcardBind(t *testing.T) {
+	t.Parallel()
+
+	host, port := mysqlCommandEndpoint("0.0.0.0:3307")
+	if host != "" || port != "3307" {
+		t.Fatalf("mysqlCommandEndpoint wildcard = %q/%q, want empty host/3307", host, port)
+	}
+
+	host, port = mysqlCommandEndpoint("127.0.0.1:3307")
+	if host != "127.0.0.1" || port != "3307" {
+		t.Fatalf("mysqlCommandEndpoint loopback = %q/%q, want 127.0.0.1/3307", host, port)
 	}
 }
 
@@ -187,4 +228,31 @@ func waitForTCP(t *testing.T, address string) {
 	}
 
 	t.Fatalf("timed out waiting for TCP listener %s", address)
+}
+
+func waitForHTTP(t *testing.T, url string) {
+	t.Helper()
+
+	client := &http.Client{Timeout: 100 * time.Millisecond}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			cancel()
+			t.Fatalf("NewRequestWithContext() error = %v", err)
+		}
+		response, err := client.Do(request)
+		cancel()
+		if err == nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for HTTP listener %s", url)
 }

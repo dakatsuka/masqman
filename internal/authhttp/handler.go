@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -79,6 +80,7 @@ type HandlerConfig struct {
 	Issuer       otp.Issuer
 	CookieSecure bool
 	MySQLHost    string
+	MySQLPort    string
 	TokenBytes   int
 	Random       io.Reader
 }
@@ -90,6 +92,7 @@ type Handler struct {
 	issuer       otp.Issuer
 	cookieSecure bool
 	mysqlHost    string
+	mysqlPort    string
 	tokenBytes   int
 	random       io.Reader
 }
@@ -133,6 +136,7 @@ func NewHandler(config HandlerConfig) (*Handler, error) {
 		issuer:       config.Issuer,
 		cookieSecure: config.CookieSecure,
 		mysqlHost:    config.MySQLHost,
+		mysqlPort:    config.MySQLPort,
 		tokenBytes:   config.TokenBytes,
 		random:       config.Random,
 	}, nil
@@ -248,7 +252,7 @@ func (h *Handler) handleCredentialsPost(w http.ResponseWriter, r *http.Request) 
 	renderHTML(w, credentialsTemplate, credentialsPageData{
 		CSRFToken: session.CSRFToken,
 		Credential: &credentialView{
-			Command:   fmt.Sprintf("mysql -h %s -u %s -p", h.hostForCommand(r), credential.Username),
+			Command:   h.commandForCredential(r, credential.Username),
 			Password:  credential.Password,
 			ExpiresAt: credential.ExpiresAt.Format(time.RFC3339),
 		},
@@ -318,8 +322,20 @@ func (h *Handler) hostForCommand(r *http.Request) string {
 	if h.mysqlHost != "" {
 		return h.mysqlHost
 	}
+	host, _, err := net.SplitHostPort(r.Host)
+	if err == nil && host != "" {
+		return host
+	}
 
 	return r.Host
+}
+
+func (h *Handler) commandForCredential(r *http.Request, username string) string {
+	if h.mysqlPort == "" {
+		return fmt.Sprintf("mysql -h %s -u %s -p", h.hostForCommand(r), username)
+	}
+
+	return fmt.Sprintf("mysql -h %s -P %s -u %s -p", h.hostForCommand(r), h.mysqlPort, username)
 }
 
 func (h *Handler) setCookie(w http.ResponseWriter, name string, value string, path string) {
