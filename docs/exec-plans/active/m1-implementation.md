@@ -231,6 +231,12 @@ read-only query forwarding, result masking, and structured audit logging.
   `COM_STMT_PREPARE` rejection coverage that the stock CLI cannot trigger
   directly. The compose `mysql-client` service defines `host.docker.internal`
   for host proxy access from the container.
+- Add a Docker-gated CLI end-to-end test that starts `cmd/masqman`, authenticates
+  through the browser HTTP routes, explicitly issues a one-time credential from
+  `/credentials`, then uses the containerized `mysql` client to connect through
+  the MySQL proxy with that HTTP-issued credential and verify masked SELECT
+  output. This covers shared OTP state between the HTTP listener and MySQL
+  listener in the real startup path.
 - Add the first MySQL session audit boundary in `internal/mysqlproxy`.
   Successful OTP authentication records an auth event, failed authentication
   records a generic rejected auth event where the protocol hook permits it, and
@@ -475,6 +481,15 @@ read-only query forwarding, result masking, and structured audit logging.
 - `MASQMAN_RUN_DOCKER_PROTOCOL_TESTS=1 go test ./internal/mysqlproxy -run
   TestDockerProtocol -count=1` passed on 2026-06-20 against Docker Compose
   MySQL Server and the containerized MySQL client.
+- `MASQMAN_RUN_DOCKER_PROTOCOL_TESTS=1 go test ./cmd/masqman -run
+  '^TestDockerE2EHTTPIssuedCredentialConnectsToMySQLProxy$' -count=1` passed on
+  2026-06-20 after adding CLI HTTP-to-MySQL credential flow coverage.
+- `go test ./...` passed on 2026-06-20 after adding the Docker-gated CLI E2E
+  test.
+- `go test -race ./cmd/masqman` passed on 2026-06-20 after adding the
+  Docker-gated CLI E2E test.
+- `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
+  adding the Docker-gated CLI E2E test.
 - `go test ./internal/mysqlproxy` passed on 2026-06-20 after adding auth and
   query audit wiring to MySQL proxy sessions.
 - `go test ./...` passed on 2026-06-20 after MySQL proxy audit wiring.
