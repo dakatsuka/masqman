@@ -1,9 +1,11 @@
 package mysqlproxy
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
+	"github.com/dakatsuka/masqman/internal/audit"
 	"github.com/dakatsuka/masqman/internal/masking"
 	"github.com/dakatsuka/masqman/internal/sqlpolicy"
 
@@ -36,6 +38,8 @@ type forwardingHandler struct {
 	decision sqlpolicy.Decision
 	closed   bool
 	terminal error
+
+	maskedFields int
 }
 
 func newForwardingHandler(upstream upstreamSession) *forwardingHandler {
@@ -79,6 +83,19 @@ func newSessionHandlerWithLimits(
 	return newPolicyHandlerWithLimits(config, limits, newForwardingHandlerWithLimits(upstream, masker, limits))
 }
 
+func newSessionHandlerWithAudit(
+	config sqlpolicy.Config,
+	masker masking.Policy,
+	limits resourceLimits,
+	upstream upstreamSession,
+	auditor audit.Logger,
+	identity auditIdentity,
+) server.Handler {
+	forwarding := newForwardingHandlerWithLimits(upstream, masker, limits)
+
+	return newPolicyHandlerWithAudit(config, limits, forwarding, auditor, identity)
+}
+
 func (handler *forwardingHandler) UseDB(database string) error {
 	if handler.closed {
 		return unsupportedError()
@@ -96,6 +113,7 @@ func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, erro
 	if handler.closed {
 		return nil, unsupportedError()
 	}
+	handler.maskedFields = 0
 
 	result, err := handler.execute(query)
 	if err != nil {
@@ -321,6 +339,9 @@ func (handler *forwardingHandler) maskRow(
 		masked := raw
 		if !handler.expressionAllowsPassthrough(i, fields[i], len(fields)) {
 			masked = handler.masker.Mask(maskingField(fields[i]), raw)
+			if maskingChanged(raw, masked) {
+				handler.maskedFields++
+			}
 		}
 		rowData = appendMaskingValue(rowData, masked)
 	}
@@ -349,6 +370,10 @@ func (handler *forwardingHandler) expressionAllowsPassthrough(index int, field *
 
 	return handler.decision.Kind == sqlpolicy.AllowOperationalRead &&
 		context.Kind == sqlpolicy.ExpressionLiteral
+}
+
+func (handler *forwardingHandler) maskedFieldCount() int {
+	return handler.maskedFields
 }
 
 func resultHasResultset(result *mysql.Result) bool {
@@ -435,6 +460,10 @@ func appendMaskingValue(rowData mysql.RowData, value masking.Value) mysql.RowDat
 	}
 
 	return append(rowData, mysql.PutLengthEncodedString(value.Raw)...)
+}
+
+func maskingChanged(original masking.Value, masked masking.Value) bool {
+	return original.Null != masked.Null || !bytes.Equal(original.Raw, masked.Raw)
 }
 
 func rowDatasFromValues(values [][]mysql.FieldValue) ([]mysql.RowData, error) {

@@ -227,6 +227,15 @@ read-only query forwarding, result masking, and structured audit logging.
   `COM_STMT_PREPARE` rejection coverage that the stock CLI cannot trigger
   directly. The compose `mysql-client` service defines `host.docker.internal`
   for host proxy access from the container.
+- Add the first MySQL session audit boundary in `internal/mysqlproxy`.
+  Successful OTP authentication records an auth event, failed authentication
+  records a generic rejected auth event where the protocol hook permits it, and
+  auth audit failure rejects the session after closing the activated upstream.
+  Query audit is emitted from the policy boundary for allowed, rejected, and
+  forwarded-error query paths with normalized statement text, decision,
+  authenticated user/source identity, generic error class, and a count of result
+  values changed by masking. Query audit failure closes the upstream/session and
+  returns a generic MySQL-compatible error.
 
 ## Verification
 
@@ -413,6 +422,11 @@ read-only query forwarding, result masking, and structured audit logging.
 - `MASQMAN_RUN_DOCKER_PROTOCOL_TESTS=1 go test ./internal/mysqlproxy -run
   TestDockerProtocol -count=1` passed on 2026-06-20 against Docker Compose
   MySQL Server and the containerized MySQL client.
+- `go test ./internal/mysqlproxy` passed on 2026-06-20 after adding auth and
+  query audit wiring to MySQL proxy sessions.
+- `go test ./...` passed on 2026-06-20 after MySQL proxy audit wiring.
+- `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
+  MySQL proxy audit wiring.
 
 ## Completion Notes
 

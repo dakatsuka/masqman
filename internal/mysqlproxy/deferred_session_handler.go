@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"github.com/dakatsuka/masqman/internal/audit"
 	"github.com/dakatsuka/masqman/internal/masking"
 	"github.com/dakatsuka/masqman/internal/sqlpolicy"
 
@@ -9,7 +10,7 @@ import (
 )
 
 type deferredSessionHandler struct {
-	policy     server.Handler
+	policy     *policyHandler
 	forwarding *deferredForwardingHandler
 }
 
@@ -41,12 +42,22 @@ func newDeferredSessionHandlerWithLimits(
 	masker masking.Policy,
 	limits resourceLimits,
 ) *deferredSessionHandler {
+	return newDeferredSessionHandlerWithAudit(config, masker, limits, nil, auditIdentity{})
+}
+
+func newDeferredSessionHandlerWithAudit(
+	config sqlpolicy.Config,
+	masker masking.Policy,
+	limits resourceLimits,
+	auditor audit.Logger,
+	identity auditIdentity,
+) *deferredSessionHandler {
 	forwarding := &deferredForwardingHandler{}
 	forwarding.masker = masker
 	forwarding.limits = limits
 
 	return &deferredSessionHandler{
-		policy:     newPolicyHandlerWithLimits(config, limits, forwarding),
+		policy:     newPolicyHandlerWithAudit(config, limits, forwarding, auditor, identity),
 		forwarding: forwarding,
 	}
 }
@@ -61,6 +72,10 @@ func (handler *deferredSessionHandler) Close() error {
 
 func (handler *deferredSessionHandler) TerminalError() error {
 	return handler.forwarding.TerminalError()
+}
+
+func (handler *deferredSessionHandler) SetAuditIdentity(identity auditIdentity) {
+	handler.policy.setAuditIdentity(identity)
 }
 
 func (handler *deferredSessionHandler) UseDB(database string) error {
@@ -122,6 +137,18 @@ func (handler *deferredForwardingHandler) Close() error {
 	return forwarding.Close()
 }
 
+func (handler *deferredForwardingHandler) closeTerminal(err error) error {
+	if handler.forwarding == nil {
+		handler.deactivate(err)
+
+		return nil
+	}
+	forwarding := handler.forwarding
+	handler.deactivate(err)
+
+	return forwarding.Close()
+}
+
 func (handler *deferredForwardingHandler) UseDB(database string) error {
 	if handler.forwarding == nil {
 		if handler.closed {
@@ -156,6 +183,14 @@ func (handler *deferredForwardingHandler) HandleQuery(query string) (*mysql.Resu
 
 func (handler *deferredForwardingHandler) TerminalError() error {
 	return handler.terminal
+}
+
+func (handler *deferredForwardingHandler) maskedFieldCount() int {
+	if handler.forwarding == nil {
+		return 0
+	}
+
+	return handler.forwarding.maskedFieldCount()
 }
 
 func (handler *deferredForwardingHandler) setQueryDecision(decision sqlpolicy.Decision) {

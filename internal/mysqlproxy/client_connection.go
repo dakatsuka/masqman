@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/dakatsuka/masqman/internal/audit"
 	appconfig "github.com/dakatsuka/masqman/internal/config"
 	"github.com/dakatsuka/masqman/internal/otp"
 
@@ -49,6 +50,7 @@ func (adapter goMySQLProtocolServerAdapter) InvalidateCache(username string, hos
 type clientConnectionHandlerConfig struct {
 	Config            appconfig.Config
 	Verifier          otp.Verifier
+	AuditLogger       audit.Logger
 	ProtocolServer    protocolServer
 	UpstreamConnector upstreamSessionConnector
 }
@@ -56,6 +58,7 @@ type clientConnectionHandlerConfig struct {
 type clientConnectionHandler struct {
 	config            appconfig.Config
 	verifier          otp.Verifier
+	auditor           audit.Logger
 	protocolServer    protocolServer
 	upstreamConnector upstreamSessionConnector
 }
@@ -64,6 +67,7 @@ func newClientConnectionHandler(config clientConnectionHandlerConfig) *clientCon
 	return &clientConnectionHandler{
 		config:            config.Config,
 		verifier:          config.Verifier,
+		auditor:           config.AuditLogger,
 		protocolServer:    config.ProtocolServer,
 		upstreamConnector: config.UpstreamConnector,
 	}
@@ -83,6 +87,7 @@ func (handler *clientConnectionHandler) ServeConn(conn net.Conn) error {
 		CacheInvalidator:  handler.protocolServer,
 		UpstreamConnector: handler.upstreamConnector,
 		RequireTLS:        handler.config.MySQL.TLS.Enabled,
+		AuditLogger:       handler.auditor,
 	})
 	protocolConn, err := handler.protocolServer.NewConn(conn, session.AuthHandler, session.Handler)
 	if err != nil {

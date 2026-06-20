@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/dakatsuka/masqman/internal/audit"
+	"github.com/dakatsuka/masqman/internal/auth"
 	"github.com/dakatsuka/masqman/internal/config"
 	"github.com/dakatsuka/masqman/internal/otp"
 
@@ -275,6 +277,116 @@ func TestNewClientSessionEnforcesConfiguredMaxResultBytes(t *testing.T) {
 	assertUnsupported(t, err)
 	if !upstream.closed {
 		t.Fatal("upstream was not closed after configured result byte limit breach")
+	}
+}
+
+func TestNewClientSessionAuditsAuthAndQueryWithConsumedUser(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("1"), Type: mysql.MYSQL_TYPE_LONG}},
+			[][]*string{{stringPtr("1")}},
+		),
+	}
+	logger := &recordingAuditLogger{}
+	connector := &recordingUpstreamConnector{upstream: upstream}
+	cfg := config.Default()
+	cfg.Setup.AllowSchemaSelection = []string{"app"}
+	clientSession := newClientSession(clientSessionConfig{
+		Config: cfg,
+		Verifier: &recordingVerifier{
+			pending: otp.PendingCredential{User: auth.User{ID: "alice", DisplayName: "Alice"}},
+		},
+		RemoteAddr:        "10.0.0.1:60000",
+		UpstreamConnector: connector,
+		AuditLogger:       logger,
+	})
+	authHandler, ok := clientSession.AuthHandler.(*sessionAuthenticationHandler)
+	if !ok {
+		t.Fatalf("AuthHandler = %T, want *sessionAuthenticationHandler", clientSession.AuthHandler)
+	}
+	if err := authHandler.recordAuthSuccess("alice-otp", "127.0.0.1:3307"); err != nil {
+		t.Fatalf("recordAuthSuccess() error = %v, want nil", err)
+	}
+	if _, err := clientSession.Handler.HandleQuery("select 1"); err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+
+	if len(logger.events) != 2 {
+		t.Fatalf("audit event count = %d, want 2: %#v", len(logger.events), logger.events)
+	}
+	authEvent := logger.events[0]
+	if authEvent.Kind != audit.EventAuth ||
+		authEvent.UserID != "alice" ||
+		authEvent.SourceAddr != "10.0.0.1" ||
+		authEvent.Decision != "allow" ||
+		authEvent.ErrorClass != "" {
+		t.Fatalf("auth audit event = %#v", authEvent)
+	}
+	queryEvent := logger.events[1]
+	if queryEvent.Kind != audit.EventQuery ||
+		queryEvent.UserID != "alice" ||
+		queryEvent.SourceAddr != "10.0.0.1" ||
+		queryEvent.Decision != "allow_operational_read" {
+		t.Fatalf("query audit event = %#v", queryEvent)
+	}
+}
+
+func TestNewClientSessionMarksTerminalWhenQueryAuditFails(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{result: &mysql.Result{}}
+	connector := &recordingUpstreamConnector{upstream: upstream}
+	cfg := config.Default()
+	cfg.Setup.AllowSchemaSelection = []string{"app"}
+	clientSession := newClientSession(clientSessionConfig{
+		Config: cfg,
+		Verifier: &recordingVerifier{
+			pending: otp.PendingCredential{User: auth.User{ID: "alice"}},
+		},
+		RemoteAddr:        "10.0.0.1:60000",
+		UpstreamConnector: connector,
+		AuditLogger:       &recordingAuditLogger{err: errors.New("audit sink unavailable")},
+	})
+	authHandler, ok := clientSession.AuthHandler.(*sessionAuthenticationHandler)
+	if !ok {
+		t.Fatalf("AuthHandler = %T, want *sessionAuthenticationHandler", clientSession.AuthHandler)
+	}
+	if err := authHandler.recordAuthSuccess("alice-otp", "127.0.0.1:3307"); err == nil {
+		t.Fatal("recordAuthSuccess() error = nil, want auth audit failure")
+	}
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after auth audit failure")
+	}
+
+	upstream = &recordingUpstream{result: &mysql.Result{}}
+	clientSession = newClientSession(clientSessionConfig{
+		Config: cfg,
+		Verifier: &recordingVerifier{
+			pending: otp.PendingCredential{User: auth.User{ID: "alice"}},
+		},
+		RemoteAddr:        "10.0.0.1:60000",
+		UpstreamConnector: &recordingUpstreamConnector{upstream: upstream},
+		AuditLogger: &recordingAuditLogger{
+			errOnCall: 2,
+			err:       errors.New("query audit sink unavailable"),
+		},
+	})
+	authHandler, ok = clientSession.AuthHandler.(*sessionAuthenticationHandler)
+	if !ok {
+		t.Fatalf("AuthHandler = %T, want *sessionAuthenticationHandler", clientSession.AuthHandler)
+	}
+	if err := authHandler.recordAuthSuccess("alice-otp", "127.0.0.1:3307"); err != nil {
+		t.Fatalf("recordAuthSuccess() error = %v, want nil", err)
+	}
+	_, err := clientSession.Handler.HandleQuery("select id from employees")
+	assertUnsupported(t, err)
+	if clientSession.TerminalError() == nil {
+		t.Fatal("TerminalError() = nil after query audit failure")
+	}
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after query audit failure")
 	}
 }
 

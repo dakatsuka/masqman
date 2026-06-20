@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/dakatsuka/masqman/internal/audit"
 	appconfig "github.com/dakatsuka/masqman/internal/config"
 	"github.com/dakatsuka/masqman/internal/otp"
 
@@ -21,6 +22,7 @@ import (
 type Server struct {
 	config            appconfig.Config
 	verifier          otp.Verifier
+	auditor           audit.Logger
 	protocolServer    protocolServer
 	upstreamConnector upstreamSessionConnector
 	listen            listenFunc
@@ -29,6 +31,7 @@ type Server struct {
 type serverConfig struct {
 	Config            appconfig.Config
 	Verifier          otp.Verifier
+	AuditLogger       audit.Logger
 	ProtocolServer    protocolServer
 	UpstreamConnector upstreamSessionConnector
 	Listen            listenFunc
@@ -37,15 +40,20 @@ type serverConfig struct {
 type listenFunc func(network string, address string) (net.Listener, error)
 
 // NewServer builds a MySQL proxy server from validated Masqman configuration.
-func NewServer(config appconfig.Config, verifier otp.Verifier) (*Server, error) {
+func NewServer(config appconfig.Config, verifier otp.Verifier, auditors ...audit.Logger) (*Server, error) {
 	protocolServer, err := newGoMySQLProtocolServer(config)
 	if err != nil {
 		return nil, err
+	}
+	var auditor audit.Logger
+	if len(auditors) > 0 {
+		auditor = auditors[0]
 	}
 
 	return newServer(serverConfig{
 		Config:         config,
 		Verifier:       verifier,
+		AuditLogger:    auditor,
 		ProtocolServer: protocolServer,
 	}), nil
 }
@@ -99,6 +107,7 @@ func newServer(config serverConfig) *Server {
 	return &Server{
 		config:            config.Config,
 		verifier:          config.Verifier,
+		auditor:           config.AuditLogger,
 		protocolServer:    config.ProtocolServer,
 		upstreamConnector: config.UpstreamConnector,
 		listen:            listen,
@@ -127,6 +136,7 @@ func (server *Server) Serve(listener net.Listener) error {
 	handler := newClientConnectionHandler(clientConnectionHandlerConfig{
 		Config:            server.config,
 		Verifier:          server.verifier,
+		AuditLogger:       server.auditor,
 		ProtocolServer:    server.protocolServer,
 		UpstreamConnector: server.upstreamConnector,
 	})

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dakatsuka/masqman/internal/audit"
+	"github.com/dakatsuka/masqman/internal/auth"
 	"github.com/dakatsuka/masqman/internal/config"
 	"github.com/dakatsuka/masqman/internal/otp"
 
@@ -88,6 +90,53 @@ func TestClientConnectionHandlerSharesDeferredSessionWithAuthActivation(t *testi
 	}
 	if verifier.consumedUsername != "alice-otp" {
 		t.Fatalf("Consume username = %q, want alice-otp", verifier.consumedUsername)
+	}
+}
+
+func TestClientConnectionHandlerPassesAuditLoggerToSession(t *testing.T) {
+	t.Parallel()
+
+	var protocolConn *recordingProtocolConn
+	protocolServer := &recordingProtocolServer{authSuccessUsername: "alice-otp"}
+	protocolConn = &recordingProtocolConn{
+		onCommands: []func() error{
+			func() error {
+				_, err := protocolServer.commandHandler.HandleQuery("select 1")
+				protocolConn.closed = true
+
+				return err
+			},
+		},
+	}
+	protocolServer.protocolConn = protocolConn
+	logger := &recordingAuditLogger{}
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("1"), Type: mysql.MYSQL_TYPE_LONG}},
+			[][]*string{{stringPtr("1")}},
+		),
+	}
+	handler := newClientConnectionHandler(clientConnectionHandlerConfig{
+		Config: config.Default(),
+		Verifier: &recordingVerifier{
+			pending: otp.PendingCredential{User: auth.User{ID: "alice"}},
+		},
+		AuditLogger:       logger,
+		ProtocolServer:    protocolServer,
+		UpstreamConnector: &recordingUpstreamConnector{upstream: upstream},
+	})
+
+	if err := handler.ServeConn(&recordingConn{remoteAddr: "10.0.0.1:60000"}); err != nil {
+		t.Fatalf("ServeConn() error = %v, want nil", err)
+	}
+	if len(logger.events) != 2 {
+		t.Fatalf("audit event count = %d, want 2: %#v", len(logger.events), logger.events)
+	}
+	if logger.events[0].Kind != audit.EventAuth || logger.events[0].UserID != "alice" {
+		t.Fatalf("auth audit event = %#v", logger.events[0])
+	}
+	if logger.events[1].Kind != audit.EventQuery || logger.events[1].UserID != "alice" {
+		t.Fatalf("query audit event = %#v", logger.events[1])
 	}
 }
 

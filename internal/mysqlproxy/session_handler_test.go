@@ -1,8 +1,11 @@
 package mysqlproxy
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/dakatsuka/masqman/internal/audit"
 	"github.com/dakatsuka/masqman/internal/masking"
 
 	"github.com/go-mysql-org/go-mysql/client"
@@ -100,6 +103,133 @@ func TestSessionHandlerPassesOriginFreeOperationalLiteralThroughMasking(t *testi
 	}
 	if got := fieldValueText(t, values[0]); got != "1" {
 		t.Fatalf("masked origin-free SELECT 1 = %q, want 1", got)
+	}
+}
+
+func TestSessionHandlerAuditsAllowedMaskedQuery(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{
+				{
+					Schema:   []byte("app"),
+					Name:     []byte("id"),
+					OrgTable: []byte("employees"),
+					OrgName:  []byte("id"),
+					Type:     mysql.MYSQL_TYPE_LONG,
+				},
+				{
+					Schema:   []byte("app"),
+					Name:     []byte("email"),
+					OrgTable: []byte("employees"),
+					OrgName:  []byte("email"),
+					Type:     mysql.MYSQL_TYPE_VAR_STRING,
+				},
+			},
+			[][]*string{{stringPtr("1"), stringPtr("alice@example.test")}},
+		),
+	}
+	logger := &recordingAuditLogger{}
+	query := "select id, email from employees where id = 1"
+	handler := newSessionHandlerWithAudit(
+		testPolicyConfig(),
+		masking.NewPolicy(masking.Config{
+			TableRules: []masking.TableRule{{Schema: "app", Table: "employees", Columns: []string{"id"}}},
+		}),
+		resourceLimits{},
+		upstream,
+		logger,
+		auditIdentity{userID: "alice", sourceAddr: "10.0.0.1"},
+	)
+
+	_, err := handler.HandleQuery(query)
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+
+	event := logger.singleEvent(t)
+	if event.Kind != audit.EventQuery ||
+		event.UserID != "alice" ||
+		event.SourceAddr != "10.0.0.1" ||
+		event.NormalizedStatement != audit.NormalizeStatement(query) ||
+		event.Decision != "allow_read" ||
+		event.MaskedFields != 1 ||
+		event.ErrorClass != "" {
+		t.Fatalf("audit event = %#v", event)
+	}
+}
+
+func TestSessionHandlerAuditsPolicyRejectionBeforeForwarding(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{}
+	logger := &recordingAuditLogger{}
+	query := "drop table employees"
+	handler := newSessionHandlerWithAudit(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{},
+		upstream,
+		logger,
+		auditIdentity{userID: "alice", sourceAddr: "10.0.0.1"},
+	)
+
+	_, err := handler.HandleQuery(query)
+	assertMySQLErrorCode(t, err, mysql.ER_SPECIFIC_ACCESS_DENIED_ERROR)
+	if upstream.executeCalls != 0 {
+		t.Fatalf("upstream Execute calls = %d, want 0", upstream.executeCalls)
+	}
+
+	event := logger.singleEvent(t)
+	if event.Kind != audit.EventQuery ||
+		event.Decision != "reject" ||
+		event.NormalizedStatement != audit.NormalizeStatement(query) ||
+		event.ErrorClass != "policy_reject" {
+		t.Fatalf("audit event = %#v", event)
+	}
+}
+
+func TestSessionHandlerFailsClosedWhenQueryAuditFails(t *testing.T) {
+	t.Parallel()
+
+	auditErr := errors.New("audit sink unavailable")
+	upstream := &recordingUpstream{result: &mysql.Result{}}
+	logger := &recordingAuditLogger{err: auditErr}
+	handler := newSessionHandlerWithAudit(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{},
+		upstream,
+		logger,
+		auditIdentity{userID: "alice", sourceAddr: "10.0.0.1"},
+	)
+
+	_, err := handler.HandleQuery("select id from employees")
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after query audit failure")
+	}
+}
+
+func TestSessionHandlerClosesUpstreamWhenPolicyRejectionAuditFails(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{result: &mysql.Result{}}
+	logger := &recordingAuditLogger{err: errors.New("audit sink unavailable")}
+	handler := newSessionHandlerWithAudit(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{},
+		upstream,
+		logger,
+		auditIdentity{userID: "alice", sourceAddr: "10.0.0.1"},
+	)
+
+	_, err := handler.HandleQuery("drop table employees")
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after policy rejection audit failure")
 	}
 }
 
@@ -617,4 +747,29 @@ func TestSessionHandlerMasksOperationalReadWithPhysicalOriginMetadata(t *testing
 	if got := fieldValueText(t, values[0]); got != "0" {
 		t.Fatalf("operational read with physical origin = %q, want numeric mask", got)
 	}
+}
+
+type recordingAuditLogger struct {
+	events    []audit.Event
+	err       error
+	errOnCall int
+}
+
+func (logger *recordingAuditLogger) Log(_ context.Context, event audit.Event) error {
+	logger.events = append(logger.events, event)
+	if logger.errOnCall > 0 && len(logger.events) != logger.errOnCall {
+		return nil
+	}
+
+	return logger.err
+}
+
+func (logger *recordingAuditLogger) singleEvent(t *testing.T) audit.Event {
+	t.Helper()
+
+	if len(logger.events) != 1 {
+		t.Fatalf("audit event count = %d, want 1: %#v", len(logger.events), logger.events)
+	}
+
+	return logger.events[0]
 }

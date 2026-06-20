@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 
+	"github.com/dakatsuka/masqman/internal/auth"
 	"github.com/dakatsuka/masqman/internal/otp"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -72,18 +73,28 @@ func (handler *otpAuthenticationHandler) OnAuthFailure(conn *server.Conn, _ erro
 }
 
 func (handler *otpAuthenticationHandler) recordAuthSuccess(username string, localAddr string) error {
+	_, err := handler.consumeAuthSuccess(username, localAddr)
+
+	return err
+}
+
+func (handler *otpAuthenticationHandler) consumeAuthSuccess(
+	username string,
+	localAddr string,
+) (auth.User, error) {
 	if username == "" {
 		username = handler.lastUsername
 	}
 
-	if _, err := handler.verifier.Consume(context.Background(), username); err != nil {
-		return err
+	user, err := handler.verifier.Consume(context.Background(), username)
+	if err != nil {
+		return auth.User{}, err
 	}
 	if handler.cacheInvalidator != nil {
 		handler.cacheInvalidator.InvalidateCache(username, localAddr)
 	}
 
-	return nil
+	return user, nil
 }
 
 func (handler *otpAuthenticationHandler) recordAuthFailure(username string) {
