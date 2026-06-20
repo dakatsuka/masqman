@@ -2,7 +2,7 @@
 
 ## Status
 
-Active
+Completed
 
 ## Objective
 
@@ -43,7 +43,7 @@ read-only query forwarding, result masking, and structured audit logging.
 
 ## Steps
 
-- [ ] Explore: verify `go-mysql-org/go-mysql` server/client APIs in a small
+- [x] Explore: verify `go-mysql-org/go-mysql` server/client APIs in a small
       spike and confirm `caching_sha2_password` full auth over TLS with a
       containerized MySQL client.
 - [x] Design review: request sub-agent review for ADR 0001 and this plan;
@@ -64,11 +64,11 @@ read-only query forwarding, result masking, and structured audit logging.
       function allowlist boundaries, and metadata-query rejection.
 - [x] Green: complete parser-backed SQL classification before M1 protocol
       forwarding is considered complete.
-- [ ] Green: implement `internal/mysqlproxy` around `go-mysql-org/go-mysql`.
-- [ ] Refactor: simplify package boundaries while preserving public contracts.
-- [ ] Static checks: run Go formatting, tests, and static analysis.
-- [ ] Code review: request sub-agent review after implementation.
-- [ ] Re-review: fix findings and repeat review until it passes.
+- [x] Green: implement `internal/mysqlproxy` around `go-mysql-org/go-mysql`.
+- [x] Refactor: simplify package boundaries while preserving public contracts.
+- [x] Static checks: run Go formatting, tests, and static analysis.
+- [x] Code review: request sub-agent review after implementation.
+- [x] Re-review: fix findings and repeat review until it passes.
 
 ## Decisions
 
@@ -104,9 +104,9 @@ read-only query forwarding, result masking, and structured audit logging.
   deployments can be case-sensitive.
 - Pin `github.com/go-mysql-org/go-mysql` v1.15.0 and start `internal/mysqlproxy`
   with compile-time coverage for `server.Handler`, `server.AuthenticationHandler`,
-  MySQL error mapping, and `caching_sha2_password` credential setup. This is an
-  API boundary spike only; forwarding and containerized client compatibility
-  remain pending.
+  MySQL error mapping, and `caching_sha2_password` credential setup. This began
+  as an API boundary spike; later decisions in this plan completed forwarding,
+  masking, resource limits, audit wiring, and containerized client compatibility.
 - Enforce `sqlpolicy` decisions before `COM_QUERY` delegation in
   `internal/mysqlproxy`: allowed statements pass to the next protocol handler,
   policy rejections map to `ER_SPECIFIC_ACCESS_DENIED_ERROR`, and unsupported
@@ -114,8 +114,9 @@ read-only query forwarding, result masking, and structured audit logging.
 - Add the first `internal/mysqlproxy` forwarding boundary: an upstream session
   interface compatible with `*client.Conn`, a `server.Handler` adapter for
   `COM_QUERY` and `COM_INIT_DB`, and a session handler factory that composes
-  `sqlpolicy` gating with upstream delegation. Result masking, resource limits,
-  audit events, connection ownership, and Docker protocol tests remain pending.
+  `sqlpolicy` gating with upstream delegation. Later decisions in this plan
+  added result masking, resource limits, audit events, connection ownership, and
+  Docker protocol tests.
 - The forwarding boundary rejects upstream results that carry
   `SERVER_MORE_RESULTS_EXISTS`, closes the upstream session, and returns a
   generic unsupported-protocol MySQL error. Because go-mysql can keep the
@@ -465,9 +466,6 @@ read-only query forwarding, result masking, and structured audit logging.
 - `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
   2026-06-18 after re-review fixes to avoid `MaxResultRows`-sized
   preallocation and to close rejected streaming results.
-- Docker Compose integration test with MySQL Server 8.4 or newer.
-- Containerized MySQL client compatibility checks.
-- Static analysis command selected during Go project setup.
 - `go test ./internal/mysqlproxy` passed on 2026-06-20 after enforcing
   `MaxResultBytes` for buffered, values-only, masked, and bounded-streaming
   result paths.
@@ -520,8 +518,25 @@ read-only query forwarding, result masking, and structured audit logging.
 
 ## Completion Notes
 
-Pending.
+M1 now has the first usable Masqman path:
+
+- local browser login with CSRF-protected server-rendered routes;
+- explicit one-time MySQL credential issuance from `/credentials`;
+- MySQL protocol authentication with single-use credentials;
+- read-only SQL classification, setup statement handling, and metadata-query
+  rejection;
+- upstream forwarding with text-resultset masking;
+- conservative query/result/session resource limits;
+- structured file audit logging for authentication and query paths;
+- CLI startup for shared HTTP and MySQL listeners with context-aware shutdown;
+- Docker-gated protocol and HTTP-to-MySQL end-to-end coverage.
+
+Deferred follow-up work remains intentionally outside M1: OAuth2/SAML, source
+IP binding for one-time credentials, operator-configurable expression and
+metadata policy, per-user/per-group masking policy, and the product/spec open
+question about requiring upstream MySQL TLS in the first production milestone.
 
 ## Commit
 
-Pending.
+Implemented across the M1 commit series. This completed plan was moved out of
+`active/` after the implementation and verification work was finished.

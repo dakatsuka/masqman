@@ -1,19 +1,20 @@
 # Masqman
 
-Masqman is a Go MySQL proxy that will sit between MySQL clients and MySQL
-Server, reject unsafe statements, audit user activity, and mask result fields
-that are not explicitly allowed.
+Masqman is a Go MySQL proxy that sits between MySQL clients and MySQL Server,
+rejects unsafe statements, audits user activity, and masks result fields that
+are not explicitly allowed.
 
-The project is in the M1 scaffolding phase. The current repository contains the
-accepted design documents, a Go module, a minimal CLI entry point, and a Docker
-Compose MySQL development environment.
+The repository contains the completed M1 implementation: local browser login,
+explicit one-time MySQL credential issuance, a conservative text-protocol MySQL
+proxy, result masking, audit logging, and a Docker Compose MySQL development
+environment.
 
 ## Requirements
 
 - Go 1.26.x
 - Docker with Docker Compose
 
-The planned module path is:
+The module path is:
 
 ```text
 github.com/dakatsuka/masqman
@@ -24,12 +25,12 @@ github.com/dakatsuka/masqman
 - Product behavior: [docs/product-specs/mysql-masking-proxy.md](docs/product-specs/mysql-masking-proxy.md)
 - Architecture: [docs/design-docs/initial-architecture.md](docs/design-docs/initial-architecture.md)
 - Protocol/parser ADR: [docs/design-docs/adr/0001-mysql-protocol-and-parser-libraries.md](docs/design-docs/adr/0001-mysql-protocol-and-parser-libraries.md)
-- M1 execution plan: [docs/exec-plans/active/m1-implementation.md](docs/exec-plans/active/m1-implementation.md)
+- M1 execution plan: [docs/exec-plans/completed/m1-implementation.md](docs/exec-plans/completed/m1-implementation.md)
 - MySQL protocol notes: [docs/references/mysql-protocol-auth-notes.md](docs/references/mysql-protocol-auth-notes.md)
 
 ## Quick Start
 
-Verify the Go scaffold:
+Verify the Go project:
 
 ```sh
 go test ./...
@@ -76,7 +77,7 @@ The Compose environment starts:
 
 The initialization SQL in [dev/mysql/init/001_schema.sql](dev/mysql/init/001_schema.sql)
 creates sample `departments` and `employees` tables. The sample data includes
-fields that should eventually exercise masking behavior.
+fields used by the masking tests.
 
 Development credentials are intentionally local-only:
 
@@ -89,16 +90,16 @@ root password: rootpass
 
 ## Current CLI
 
-The CLI currently supports version output and TOML configuration validation:
+The CLI supports version output and starting Masqman from a validated TOML
+configuration:
 
 ```sh
 go run ./cmd/masqman -version
 go run ./cmd/masqman -config ./masqman.toml
 ```
 
-The `-config` path is loaded and validated, then the command exits because
-browser authentication, MySQL proxying, masking, and audit logging startup are
-tracked in the M1 execution plan and are not implemented yet.
+With a valid config, the process starts the browser authentication listener and
+the MySQL proxy listener, sharing one-time credential state between them.
 
 ## Validation
 
@@ -110,5 +111,10 @@ go test ./...
 go tool golangci-lint run ./...
 ```
 
-Future M1 work will add Docker Compose integration tests for MySQL protocol
-compatibility and masking behavior.
+Docker-gated protocol and end-to-end tests are available when Docker is
+available:
+
+```sh
+MASQMAN_RUN_DOCKER_PROTOCOL_TESTS=1 go test ./internal/mysqlproxy -run TestDockerProtocol -count=1
+MASQMAN_RUN_DOCKER_PROTOCOL_TESTS=1 go test ./cmd/masqman -run '^TestDockerE2EHTTPIssuedCredentialConnectsToMySQLProxy$' -count=1
+```
