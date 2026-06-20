@@ -410,6 +410,9 @@ read-only query forwarding, result masking, and structured audit logging.
 - `go test ./internal/mysqlproxy` passed on 2026-06-20 after adding gated
   Docker protocol integration tests; Docker execution was not run because
   `MASQMAN_RUN_DOCKER_PROTOCOL_TESTS` was unset.
+- `MASQMAN_RUN_DOCKER_PROTOCOL_TESTS=1 go test ./internal/mysqlproxy -run
+  TestDockerProtocol -count=1` passed on 2026-06-20 against Docker Compose
+  MySQL Server and the containerized MySQL client.
 
 ## Completion Notes
 
