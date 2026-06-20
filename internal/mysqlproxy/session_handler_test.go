@@ -380,6 +380,156 @@ func TestSessionHandlerMasksBoundedStreamingResultAtRowLimitBoundary(t *testing.
 	}
 }
 
+func TestSessionHandlerRejectsResultsetsOverMaxBytes(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("email"), Type: mysql.MYSQL_TYPE_VAR_STRING}},
+			[][]*string{{stringPtr("alice@example.test")}},
+		),
+	}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultBytes: int64(len(upstream.result.RowDatas[0]) - 1)},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select email from employees")
+	if result != nil {
+		t.Fatalf("HandleQuery() result = %#v, want nil", result)
+	}
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after result byte limit breach")
+	}
+}
+
+func TestSessionHandlerAllowsResultsetsAtMaxBytesBoundary(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("email"), Type: mysql.MYSQL_TYPE_VAR_STRING}},
+			[][]*string{{stringPtr("alice@example.test")}},
+		),
+	}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultBytes: int64(len(upstream.result.RowDatas[0]))},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select email from employees")
+	if err != nil {
+		t.Fatalf("HandleQuery() error = %v, want nil", err)
+	}
+	if result != upstream.result {
+		t.Fatal("HandleQuery() did not return upstream result")
+	}
+	if upstream.closed {
+		t.Fatal("upstream was closed at result byte limit boundary")
+	}
+}
+
+func TestSessionHandlerRejectsValuesOnlyResultsetsOverMaxBytes(t *testing.T) {
+	t.Parallel()
+
+	result := resultWithTextRows(
+		[]*mysql.Field{{Name: []byte("email"), Type: mysql.MYSQL_TYPE_VAR_STRING}},
+		[][]*string{{stringPtr("alice@example.test")}},
+	)
+	result.RowDatas = nil
+	upstream := &recordingUpstream{result: result}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultBytes: 1},
+		upstream,
+	)
+
+	_, err := handler.HandleQuery("select email from employees")
+	assertUnsupported(t, err)
+	if len(result.RowDatas) == 0 {
+		t.Fatal("Values-only result was not normalized to encoded RowDatas before byte limit")
+	}
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after values-only result byte limit breach")
+	}
+}
+
+func TestSessionHandlerUsesBoundedStreamingReadForResultByteLimit(t *testing.T) {
+	t.Parallel()
+
+	upstream := &streamingRecordingUpstream{
+		fields: []*mysql.Field{{Name: []byte("email"), Type: mysql.MYSQL_TYPE_VAR_STRING}},
+		rows: [][]*string{
+			{stringPtr("a@example.test")},
+			{stringPtr("b@example.test")},
+			{stringPtr("c@example.test")},
+		},
+	}
+	firstRowSize := len(resultWithTextRows(upstream.fields, upstream.rows[:1]).RowDatas[0])
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		nil,
+		resourceLimits{maxResultBytes: int64(firstRowSize)},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select email from employees")
+	if result != nil {
+		t.Fatalf("HandleQuery() result = %#v, want nil", result)
+	}
+	assertUnsupported(t, err)
+	if upstream.executeCalls != 0 {
+		t.Fatalf("buffered Execute calls = %d, want 0", upstream.executeCalls)
+	}
+	if upstream.streamingCalls != 1 {
+		t.Fatalf("ExecuteSelectStreaming calls = %d, want 1", upstream.streamingCalls)
+	}
+	if upstream.callbackRows != 2 {
+		t.Fatalf("streamed callback rows = %d, want first row plus overflow row", upstream.callbackRows)
+	}
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after bounded streaming byte limit breach")
+	}
+}
+
+func TestSessionHandlerRejectsMaskedResultsetsOverMaxBytes(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{
+				Schema:   []byte("app"),
+				Name:     []byte("email"),
+				OrgTable: []byte("employees"),
+				OrgName:  []byte("email"),
+				Type:     mysql.MYSQL_TYPE_VAR_STRING,
+			}},
+			[][]*string{{stringPtr("x")}},
+		),
+	}
+	handler := newSessionHandlerWithLimits(
+		testPolicyConfig(),
+		masking.NewPolicy(masking.Config{}),
+		resourceLimits{maxResultBytes: int64(len(upstream.result.RowDatas[0]))},
+		upstream,
+	)
+
+	result, err := handler.HandleQuery("select email from employees")
+	if result != nil {
+		t.Fatalf("HandleQuery() result = %#v, want nil", result)
+	}
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after masked result byte limit breach")
+	}
+}
+
 func TestSessionHandlerRejectsSetupStatementsThatReturnResultsets(t *testing.T) {
 	t.Parallel()
 

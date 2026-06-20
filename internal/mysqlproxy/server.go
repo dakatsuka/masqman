@@ -122,6 +122,7 @@ func (server *Server) ListenAndServe() error {
 func (server *Server) Serve(listener net.Listener) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	sessionSlots := make(chan struct{}, server.config.RateLimits.MaxMySQLSessions)
 
 	handler := newClientConnectionHandler(clientConnectionHandlerConfig{
 		Config:            server.config,
@@ -139,9 +140,20 @@ func (server *Server) Serve(listener net.Listener) error {
 			return err
 		}
 
+		select {
+		case sessionSlots <- struct{}{}:
+		default:
+			_ = conn.Close()
+
+			continue
+		}
+
 		wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer func() {
+				<-sessionSlots
+				wg.Done()
+			}()
 			_ = handler.ServeConn(conn)
 		}()
 	}

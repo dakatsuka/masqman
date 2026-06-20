@@ -99,7 +99,7 @@ func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, erro
 
 	result, err := handler.execute(query)
 	if err != nil {
-		if errors.Is(err, errResultRowLimitExceeded) {
+		if errors.Is(err, errResultRowLimitExceeded) || errors.Is(err, errResultByteLimitExceeded) {
 			_ = handler.closeTerminal(err)
 
 			return nil, unsupportedError()
@@ -130,7 +130,25 @@ func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, erro
 
 		return nil, err
 	}
+	if handler.limits.maxResultBytes > 0 && resultIsStreaming(result) {
+		err := unsupportedError()
+		result.Close()
+		_ = handler.closeTerminal(err)
+
+		return nil, err
+	}
+	if err := ensureBufferedRowDatas(result); err != nil {
+		_ = handler.closeTerminal(err)
+
+		return nil, unsupportedError()
+	}
 	if handler.resultRowsOverLimit(result) {
+		err := unsupportedError()
+		_ = handler.closeTerminal(err)
+
+		return nil, err
+	}
+	if handler.resultBytesOverLimit(result) {
 		err := unsupportedError()
 		_ = handler.closeTerminal(err)
 
@@ -141,12 +159,18 @@ func (handler *forwardingHandler) HandleQuery(query string) (*mysql.Result, erro
 
 		return nil, unsupportedError()
 	}
+	if handler.resultBytesOverLimit(result) {
+		err := unsupportedError()
+		_ = handler.closeTerminal(err)
+
+		return nil, err
+	}
 
 	return result, nil
 }
 
 func (handler *forwardingHandler) execute(query string) (*mysql.Result, error) {
-	if handler.limits.maxResultRows > 0 {
+	if handler.limits.maxResultRows > 0 || handler.limits.maxResultBytes > 0 {
 		if upstream, ok := handler.upstream.(streamingUpstreamSession); ok {
 			return handler.executeBoundedSelect(query, upstream)
 		}
@@ -161,14 +185,27 @@ func (handler *forwardingHandler) executeBoundedSelect(
 ) (*mysql.Result, error) {
 	result := &mysql.Result{}
 	var rows [][]mysql.FieldValue
+	var rowDatas []mysql.RowData
+	var resultBytes int64
 	err := upstream.ExecuteSelectStreaming(
 		query,
 		result,
 		func(row []mysql.FieldValue) error {
-			if len(rows) >= handler.limits.maxResultRows {
+			if handler.limits.maxResultRows > 0 && len(rows) >= handler.limits.maxResultRows {
 				return errResultRowLimitExceeded
 			}
-			rows = append(rows, cloneFieldValues(row))
+			cloned := cloneFieldValues(row)
+			rowData, err := rowDataFromValues(cloned)
+			if err != nil {
+				return err
+			}
+			if handler.limits.maxResultBytes > 0 &&
+				resultBytes+int64(len(rowData)) > handler.limits.maxResultBytes {
+				return errResultByteLimitExceeded
+			}
+			rows = append(rows, cloned)
+			rowDatas = append(rowDatas, rowData)
+			resultBytes += int64(len(rowData))
 
 			return nil
 		},
@@ -178,10 +215,6 @@ func (handler *forwardingHandler) executeBoundedSelect(
 		return nil, err
 	}
 	if result.Resultset != nil && len(result.Fields) > 0 {
-		rowDatas, err := rowDatasFromValues(rows)
-		if err != nil {
-			return nil, err
-		}
 		result.RowDatas = rowDatas
 		result.Values = rows
 		result.Streaming = mysql.StreamingNone
@@ -193,6 +226,10 @@ func (handler *forwardingHandler) executeBoundedSelect(
 
 func (handler *forwardingHandler) resultRowsOverLimit(result *mysql.Result) bool {
 	return handler.limits.maxResultRows > 0 && resultRowCount(result) > handler.limits.maxResultRows
+}
+
+func (handler *forwardingHandler) resultBytesOverLimit(result *mysql.Result) bool {
+	return handler.limits.maxResultBytes > 0 && resultEncodedBytes(result) > handler.limits.maxResultBytes
 }
 
 func (handler *forwardingHandler) Close() error {
@@ -347,6 +384,33 @@ func resultRowCount(result *mysql.Result) int {
 	return len(result.Values)
 }
 
+func resultEncodedBytes(result *mysql.Result) int64 {
+	if result == nil || result.Resultset == nil {
+		return 0
+	}
+
+	var size int64
+	for _, rowData := range result.RowDatas {
+		size += int64(len(rowData))
+	}
+
+	return size
+}
+
+func ensureBufferedRowDatas(result *mysql.Result) error {
+	if result == nil || result.Resultset == nil || len(result.RowDatas) > 0 || len(result.Values) == 0 {
+		return nil
+	}
+
+	rowDatas, err := rowDatasFromValues(result.Values)
+	if err != nil {
+		return err
+	}
+	result.RowDatas = rowDatas
+
+	return nil
+}
+
 func originFreeField(field *mysql.Field) bool {
 	return field == nil ||
 		(len(field.Schema) == 0 && len(field.OrgTable) == 0 && len(field.OrgName) == 0)
@@ -376,18 +440,27 @@ func appendMaskingValue(rowData mysql.RowData, value masking.Value) mysql.RowDat
 func rowDatasFromValues(values [][]mysql.FieldValue) ([]mysql.RowData, error) {
 	rowDatas := make([]mysql.RowData, 0, len(values))
 	for _, row := range values {
-		rowData := make(mysql.RowData, 0)
-		for _, value := range row {
-			raw, err := fieldValueBytes(value)
-			if err != nil {
-				return nil, err
-			}
-			rowData = appendMaskingValue(rowData, raw)
+		rowData, err := rowDataFromValues(row)
+		if err != nil {
+			return nil, err
 		}
 		rowDatas = append(rowDatas, rowData)
 	}
 
 	return rowDatas, nil
+}
+
+func rowDataFromValues(values []mysql.FieldValue) (mysql.RowData, error) {
+	rowData := make(mysql.RowData, 0)
+	for _, value := range values {
+		raw, err := fieldValueBytes(value)
+		if err != nil {
+			return nil, err
+		}
+		rowData = appendMaskingValue(rowData, raw)
+	}
+
+	return rowData, nil
 }
 
 func cloneFieldValues(values []mysql.FieldValue) []mysql.FieldValue {
@@ -468,4 +541,7 @@ var (
 	_ upstreamSession = (*client.Conn)(nil)
 )
 
-var errResultRowLimitExceeded = errors.New("result row limit exceeded")
+var (
+	errResultRowLimitExceeded  = errors.New("result row limit exceeded")
+	errResultByteLimitExceeded = errors.New("result byte limit exceeded")
+)

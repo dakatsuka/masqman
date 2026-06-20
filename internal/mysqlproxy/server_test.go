@@ -46,6 +46,54 @@ func TestServerServesAcceptedConnection(t *testing.T) {
 	}
 }
 
+func TestServerRejectsConnectionsOverMaxMySQLSessions(t *testing.T) {
+	t.Parallel()
+
+	firstCommandStarted := make(chan struct{})
+	unblockFirstCommand := make(chan struct{})
+	protocolServer := &recordingProtocolServer{
+		protocolConn: &recordingProtocolConn{
+			onCommands: []func() error{
+				func() error {
+					close(firstCommandStarted)
+					<-unblockFirstCommand
+
+					return errCommandLoopDone
+				},
+			},
+		},
+	}
+	cfg := configWithAllowedAppSchema()
+	cfg.RateLimits.MaxMySQLSessions = 1
+	mysqlServer := newServer(serverConfig{
+		Config:            cfg,
+		Verifier:          &recordingVerifier{},
+		ProtocolServer:    protocolServer,
+		UpstreamConnector: &recordingUpstreamConnector{upstream: &recordingUpstream{}},
+	})
+	listener := newRecordingListener()
+	firstConn := newSignalingConn("10.0.0.1:60000")
+	secondConn := newSignalingConn("10.0.0.2:60000")
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- mysqlServer.Serve(listener)
+	}()
+
+	listener.accepts <- acceptResult{conn: firstConn}
+	<-firstCommandStarted
+	listener.accepts <- acceptResult{conn: secondConn}
+	<-secondConn.closed
+	listener.accepts <- acceptResult{err: net.ErrClosed}
+	close(unblockFirstCommand)
+
+	if err := <-serveErr; err != nil {
+		t.Fatalf("Serve() error = %v, want nil", err)
+	}
+	if protocolServer.newConnCalls != 1 {
+		t.Fatalf("protocol NewConn calls = %d, want 1", protocolServer.newConnCalls)
+	}
+}
+
 type acceptResult struct {
 	conn net.Conn
 	err  error
@@ -80,6 +128,29 @@ func (listener *recordingListener) Addr() net.Addr {
 }
 
 var _ net.Listener = (*recordingListener)(nil)
+
+type signalingConn struct {
+	recordingConn
+	closed chan struct{}
+}
+
+func newSignalingConn(remoteAddr string) *signalingConn {
+	return &signalingConn{
+		recordingConn: recordingConn{remoteAddr: remoteAddr},
+		closed:        make(chan struct{}),
+	}
+}
+
+func (conn *signalingConn) Close() error {
+	err := conn.recordingConn.Close()
+	select {
+	case <-conn.closed:
+	default:
+		close(conn.closed)
+	}
+
+	return err
+}
 
 func TestServerReturnsAcceptErrors(t *testing.T) {
 	t.Parallel()

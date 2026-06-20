@@ -206,6 +206,20 @@ read-only query forwarding, result masking, and structured audit logging.
   upstream adapters are rejected when row limits are active because M1 cannot
   count them before returning data; this includes both `Result.StreamResult` and
   `Resultset.Streaming` modes.
+- Add a text-resultset byte-count resource-limit boundary. Forwarded resultsets
+  whose encoded text row data exceeds `Config.RateLimits.MaxResultBytes` are
+  rejected before response writing, the upstream session is closed, and the
+  client session is marked terminal. Values-only buffered results are normalized
+  into encoded `RowDatas` before counting; masking is followed by a second byte
+  check because safe output size can grow when placeholders replace short raw
+  values. Real go-mysql upstream connections use bounded
+  `ExecuteSelectStreaming` when either row or byte result limits are active and
+  stop on the first overflow row.
+- Add a MySQL listener concurrency boundary for
+  `Config.RateLimits.MaxMySQLSessions`. The accept loop acquires a session slot
+  before dispatching a client handler, releases it when the handler returns, and
+  closes newly accepted TCP connections without protocol startup when all slots
+  are occupied.
 
 ## Verification
 
@@ -379,6 +393,13 @@ read-only query forwarding, result masking, and structured audit logging.
 - Docker Compose integration test with MySQL Server 8.4 or newer.
 - Containerized MySQL client compatibility checks.
 - Static analysis command selected during Go project setup.
+- `go test ./internal/mysqlproxy` passed on 2026-06-20 after enforcing
+  `MaxResultBytes` for buffered, values-only, masked, and bounded-streaming
+  result paths.
+- `go test ./internal/mysqlproxy` passed on 2026-06-20 after enforcing
+  `MaxMySQLSessions` in the MySQL listener accept loop.
+- `go test ./...` passed on 2026-06-20 after result byte and MySQL session
+  concurrency limit work.
 
 ## Completion Notes
 

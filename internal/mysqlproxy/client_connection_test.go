@@ -355,6 +355,7 @@ type recordingProtocolServer struct {
 	authHandler    server.AuthenticationHandler
 	commandHandler server.Handler
 	protocolConn   protocolConnection
+	newConnCalls   int
 	err            error
 	errAfterAuth   error
 
@@ -370,6 +371,7 @@ func (server *recordingProtocolServer) NewConn(
 	authHandler server.AuthenticationHandler,
 	commandHandler server.Handler,
 ) (protocolConnection, error) {
+	server.newConnCalls++
 	server.authHandler = authHandler
 	server.commandHandler = commandHandler
 	if server.err != nil {

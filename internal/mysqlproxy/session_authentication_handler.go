@@ -43,8 +43,9 @@ func newClientSession(config clientSessionConfig) clientSession {
 		config.Config.SQLPolicyConfig(),
 		masking.NewPolicy(config.Config.Masking),
 		resourceLimits{
-			maxQueryBytes: config.Config.RateLimits.MaxQueryBytes,
-			maxResultRows: config.Config.RateLimits.MaxResultRows,
+			maxQueryBytes:  config.Config.RateLimits.MaxQueryBytes,
+			maxResultRows:  config.Config.RateLimits.MaxResultRows,
+			maxResultBytes: config.Config.RateLimits.MaxResultBytes,
 		},
 	)
 	connector := config.UpstreamConnector

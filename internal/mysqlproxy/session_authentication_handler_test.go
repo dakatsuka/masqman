@@ -244,6 +244,40 @@ func TestNewClientSessionEnforcesConfiguredMaxResultRows(t *testing.T) {
 	}
 }
 
+func TestNewClientSessionEnforcesConfiguredMaxResultBytes(t *testing.T) {
+	t.Parallel()
+
+	upstream := &recordingUpstream{
+		result: resultWithTextRows(
+			[]*mysql.Field{{Name: []byte("email"), Type: mysql.MYSQL_TYPE_VAR_STRING}},
+			[][]*string{{stringPtr("alice@example.test")}},
+		),
+	}
+	connector := &recordingUpstreamConnector{upstream: upstream}
+	cfg := config.Default()
+	cfg.Setup.AllowSchemaSelection = []string{"app"}
+	cfg.RateLimits.MaxResultBytes = int64(len(upstream.result.RowDatas[0]) - 1)
+	clientSession := newClientSession(clientSessionConfig{
+		Config:            cfg,
+		Verifier:          &recordingVerifier{},
+		RemoteAddr:        "10.0.0.1:60000",
+		UpstreamConnector: connector,
+	})
+	authHandler, ok := clientSession.AuthHandler.(*sessionAuthenticationHandler)
+	if !ok {
+		t.Fatalf("AuthHandler = %T, want *sessionAuthenticationHandler", clientSession.AuthHandler)
+	}
+	if err := authHandler.recordAuthSuccess("alice-otp", "127.0.0.1:3307"); err != nil {
+		t.Fatalf("recordAuthSuccess() error = %v, want nil", err)
+	}
+
+	_, err := clientSession.Handler.HandleQuery("select email from employees")
+	assertUnsupported(t, err)
+	if !upstream.closed {
+		t.Fatal("upstream was not closed after configured result byte limit breach")
+	}
+}
+
 type recordingUpstreamConnector struct {
 	upstream  upstreamSession
 	err       error
