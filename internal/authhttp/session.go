@@ -95,6 +95,14 @@ func (s *SessionStore) Get(id string) (Session, bool) {
 	return s.getLocked(id, true)
 }
 
+// Delete removes a browser session.
+func (s *SessionStore) Delete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.sessions, id)
+}
+
 // ValidateCSRF reports whether token matches the current session CSRF token.
 func (s *SessionStore) ValidateCSRF(sessionID string, token string) bool {
 	s.mu.Lock()

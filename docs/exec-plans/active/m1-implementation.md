@@ -51,7 +51,11 @@ read-only query forwarding, result masking, and structured audit logging.
 - [x] Red: write focused tests for config validation, OTP expiry/consume,
       rate limits, SQL classification, masking precedence, audit normalization,
       and HTTP auth sessions.
+- [x] Red: write browser route tests for login CSRF, browser session cookies,
+      explicit credential issuance, credential command rendering, and logout.
 - [x] Green: implement config, OTP, local auth, audit logger, and policy modules.
+- [x] Green: implement browser authentication and credential issuance routes in
+      `internal/authhttp`.
 - [x] Red: write Docker Compose protocol tests for auth, allowed setup
       statements, rejected unsupported commands, forwarded SELECT, masking, and
       metadata query rejection.
@@ -251,6 +255,16 @@ read-only query forwarding, result masking, and structured audit logging.
   return, and preserves the existing `Serve` API as a background-context
   wrapper. The CLI startup path now uses `ServeContext` so signal cancellation
   can unblock idle or active MySQL client sessions before audit cleanup runs.
+- Add the first browser authentication route boundary in `internal/authhttp`.
+  `GET /login` renders a local login form with a double-submit CSRF token,
+  `POST /login` authenticates local credentials and creates a browser session
+  without issuing a one-time MySQL credential, `GET /credentials` renders an
+  authenticated credential page, `POST /credentials` validates the session CSRF
+  token before issuing and rendering the one-time username/password, and
+  `POST /logout` deletes the browser session. The rendered MySQL command keeps
+  `-p` separate from the password, while the password is displayed separately.
+  Session cookies are `HttpOnly`, `SameSite=Lax`, and use the handler's
+  production `Secure` setting.
 
 ## Verification
 
@@ -418,6 +432,12 @@ read-only query forwarding, result masking, and structured audit logging.
 - `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
   2026-06-18 after re-review fixes for `Resultset.Streaming` rejection and
   masked bounded-streaming positive-path coverage.
+- `go test ./internal/authhttp` passed on 2026-06-20 after adding browser login,
+  credential issuance, CSRF, cookie, and logout route coverage.
+- `go test ./...` passed on 2026-06-20 after adding browser authentication
+  routes.
+- `go tool golangci-lint run ./...` passed on 2026-06-20 with 0 issues after
+  adding browser authentication routes.
 - `GOCACHE=/tmp/masqman-go-build go test ./internal/mysqlproxy` passed on
   2026-06-18 after re-review fixes to avoid `MaxResultRows`-sized
   preallocation and to close rejected streaming results.

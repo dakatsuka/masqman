@@ -97,3 +97,22 @@ func TestValidateCSRFDoesNotRefreshIdleLifetime(t *testing.T) {
 		t.Fatal("Get found idle-expired session after CSRF validation")
 	}
 }
+
+func TestSessionStoreDeletesSession(t *testing.T) {
+	t.Parallel()
+
+	store := authhttp.NewSessionStore(authhttp.SessionConfig{TokenBytes: 16})
+	session, err := store.Create(auth.User{ID: "alice"})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	store.Delete(session.ID)
+
+	if _, ok := store.Get(session.ID); ok {
+		t.Fatal("Get found deleted session")
+	}
+	if store.ValidateCSRF(session.ID, session.CSRFToken) {
+		t.Fatal("ValidateCSRF accepted deleted session")
+	}
+}
